@@ -3,10 +3,13 @@
 architecture.md §1–§3 的实现。睡梦、饥饿、气质、免疫在 M1/M2。
 """
 
+import json
+import random
+
 from . import temperature as temp
 from .clock import Clock
 from .embed import Embedder, HashEmbedder, cosine, gram_containment
-from .models import EVIDENCE, Memory, RecallResult, Slice, Tendril, new_id
+from .models import EVIDENCE, Hunger, Memory, RecallResult, Slice, Tendril, new_id
 from .store import Store
 
 SEED_SIM_WARM = 0.25      # 温/烫层的种子命中阈值
@@ -28,6 +31,10 @@ class Turu:
         self._tendrils: dict[tuple[str, str, str], Tendril] = {
             (t.src, t.dst, t.kind): t for t in self.store.all_tendrils()
         }
+        self._hungers: dict[str, Hunger] = {h.id: h for h in self.store.all_hungers()}
+        # 新生的第一口气：没睡过就从现在开始计欠觉
+        if self.store.meta_get("last_sleep") is None:
+            self.store.meta_set("last_sleep", str(self.clock.now()))
 
     # ------------------------------------------------------------ 写入
 
@@ -173,6 +180,79 @@ class Turu:
         for m in self._memories.values():
             out[temp.layer(self._t_eff(m, now))].append(m)
         return out
+
+    # ------------------------------------------------------------ 相似与图
+
+    def pair_sim(self, a: Memory, b: Memory) -> float:
+        ta = a.skeleton + " " + " ".join(a.flesh)
+        tb = b.skeleton + " " + " ".join(b.flesh)
+        return max(
+            cosine(a.embedding, b.embedding),
+            gram_containment(ta, tb),
+            gram_containment(tb, ta),
+        )
+
+    def graph_distance(self, src: str, dst: str, max_hops: int = 3) -> int:
+        """触须图上的最短跳数；超过 max_hops 或不连通返回 max_hops+1。"""
+        if src == dst:
+            return 0
+        adj: dict[str, set[str]] = {}
+        for t in self._tendrils.values():
+            adj.setdefault(t.src, set()).add(t.dst)
+            adj.setdefault(t.dst, set()).add(t.src)
+        frontier, seen = {src}, {src}
+        for hop in range(1, max_hops + 1):
+            nxt = set()
+            for node in frontier:
+                for nb in adj.get(node, ()):
+                    if nb == dst:
+                        return hop
+                    if nb not in seen:
+                        seen.add(nb)
+                        nxt.add(nb)
+            frontier = nxt
+            if not frontier:
+                break
+        return max_hops + 1
+
+    # ------------------------------------------------------------ 睡梦
+
+    def last_sleep(self) -> float:
+        return float(self.store.meta_get("last_sleep") or self.clock.now())
+
+    def needs_sleep(self) -> bool:
+        """补觉制：超过 20 小时没睡就欠觉。"""
+        from .sleep import SLEEP_DEBT_HOURS
+
+        return (self.clock.now() - self.last_sleep()) > SLEEP_DEBT_HOURS * 3600.0
+
+    def sleep(self, force: bool = False, rng: random.Random | None = None,
+              search_provider=None, rehearse_provider=None):
+        """跑一次完整睡梦周期。正常由补觉制触发，force=True 强制入睡。"""
+        from .sleep import SleepCycle
+
+        if not force and not self.needs_sleep():
+            return None
+        return SleepCycle(
+            self, rng=rng, search_provider=search_provider,
+            rehearse_provider=rehearse_provider,
+        ).run()
+
+    def whisper(self) -> str | None:
+        """晨间低语：昨晚的梦/查到的东西。取走一条，可以说也可以不说。"""
+        pending = json.loads(self.store.meta_get("whispers") or "[]")
+        if not pending:
+            return None
+        first = pending.pop(0)
+        self.store.meta_set("whispers", json.dumps(pending, ensure_ascii=False))
+        return first
+
+    def hungry(self, threshold: float = 0.7) -> list[Hunger]:
+        """饿过阈值、适合开口问人的问题。"""
+        return sorted(
+            (h for h in self._hungers.values() if h.askable and h.value >= threshold),
+            key=lambda h: -h.value,
+        )
 
     def close(self) -> None:
         self.store.close()

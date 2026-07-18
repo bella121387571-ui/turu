@@ -7,7 +7,7 @@
 import json
 import sqlite3
 
-from .models import Memory, Slice, Tendril, slices_from_json, slices_to_json
+from .models import Hunger, Memory, Slice, Tendril, slices_from_json, slices_to_json
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS tendrils (
 CREATE TABLE IF NOT EXISTS digested_flesh (   -- 消化沉淀层：遗忘不是删除
   memory_id TEXT NOT NULL, detail TEXT NOT NULL, digested_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS hungers (
+  id TEXT PRIMARY KEY, topic TEXT NOT NULL, born_from TEXT NOT NULL,
+  value REAL NOT NULL, importance REAL NOT NULL, last_fed REAL NOT NULL,
+  askable INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sleep_log (at REAL NOT NULL, report TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
 
@@ -97,11 +103,56 @@ class Store:
         rows = self.conn.execute("SELECT * FROM tendrils").fetchall()
         return [Tendril(*r) for r in rows]
 
-    # ---- digestion (M1 会用到，M0 先把沉淀层建好) ----
+    def delete_tendril(self, src: str, dst: str, kind: str) -> None:
+        self.conn.execute(
+            "DELETE FROM tendrils WHERE src=? AND dst=? AND kind=?", (src, dst, kind)
+        )
+        self.conn.commit()
+
+    # ---- digestion（沉淀层：遗忘不是删除） ----
 
     def digest_flesh(self, memory_id: str, detail: str, now: float) -> None:
         self.conn.execute(
             "INSERT INTO digested_flesh VALUES (?,?,?)", (memory_id, detail, now)
+        )
+        self.conn.commit()
+
+    def digested_count(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM digested_flesh").fetchone()[0]
+
+    # ---- hungers ----
+
+    def put_hunger(self, h: Hunger) -> None:
+        self.conn.execute(
+            "INSERT INTO hungers VALUES (?,?,?,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET value=excluded.value,"
+            " last_fed=excluded.last_fed",
+            (h.id, h.topic, h.born_from, h.value, h.importance, h.last_fed, int(h.askable)),
+        )
+        self.conn.commit()
+
+    def all_hungers(self) -> list[Hunger]:
+        rows = self.conn.execute("SELECT * FROM hungers").fetchall()
+        return [
+            Hunger(id=r[0], topic=r[1], born_from=r[2], value=r[3],
+                   importance=r[4], last_fed=r[5], askable=bool(r[6]))
+            for r in rows
+        ]
+
+    # ---- sleep log & meta ----
+
+    def log_sleep(self, at: float, report_json: str) -> None:
+        self.conn.execute("INSERT INTO sleep_log VALUES (?,?)", (at, report_json))
+        self.conn.commit()
+
+    def meta_get(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT v FROM meta WHERE k=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def meta_set(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            (key, value),
         )
         self.conn.commit()
 

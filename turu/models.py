@@ -55,10 +55,23 @@ class Memory:
 class Tendril:
     src: str
     dst: str
-    kind: str                  # 语义 | 因果 | 时序 | 矛盾 | 语境
+    kind: str                  # 语义 | 因果 | 时序 | 矛盾 | 语境 | 来源（融合的证据链，不衰减）
     weight: float
     context: str | None = None
     last_fired: float = 0.0
+
+
+@dataclass
+class Hunger:
+    """饥饿项：一个还没被填上的洞。"""
+
+    id: str
+    topic: str
+    born_from: str            # 悬空话题 | 梦中问题 | 未判决矛盾
+    value: float              # 睡梦时按天上涨，被喂食后 *= 0.3
+    importance: float
+    last_fed: float
+    askable: bool             # True=适合问人；False=适合自己搜（求知梦认领）
 
 
 @dataclass
