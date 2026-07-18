@@ -82,13 +82,13 @@ class Store:
         self.conn.commit()
 
     def update_dynamics(self, m: Memory) -> None:
-        """只允许更新动态字段：温度、触碰、叙事、血肉。skeleton 不在其中。"""
+        """只允许更新动态字段：温度、触碰、叙事、血肉、置信度。skeleton 不在其中。"""
         self.conn.execute(
             "UPDATE memories SET flesh=?, narratives=?, temperature=?,"
-            " last_touched=?, touch_count=? WHERE id=?",
+            " last_touched=?, touch_count=?, confidence=? WHERE id=?",
             (
                 json.dumps(m.flesh, ensure_ascii=False), slices_to_json(m.narratives),
-                m.temperature, m.last_touched, m.touch_count, m.id,
+                m.temperature, m.last_touched, m.touch_count, m.confidence, m.id,
             ),
         )
         self.conn.commit()
@@ -112,7 +112,7 @@ class Store:
         self.conn.execute(
             "INSERT INTO tendrils VALUES (?,?,?,?,?,?)"
             " ON CONFLICT(src,dst,kind) DO UPDATE SET weight=excluded.weight,"
-            " last_fired=excluded.last_fired",
+            " context=excluded.context, last_fired=excluded.last_fired",
             (t.src, t.dst, t.kind, t.weight, t.context, t.last_fired),
         )
         self.conn.commit()

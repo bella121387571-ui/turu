@@ -3,9 +3,9 @@
 M1 离线实现的阶段：巩固融合、代谢消化、触须衰减剪枝、冷层随机加热、
 乱炖梦、醒来筛选（含荒谬活口）、梦中问题入饥饿队列、晨间低语、补觉制。
 
-需要外部能力的阶段留了插口，接不上时诚实跳过并记入报告：
-- rehearse_provider：排练梦（需要 LLM 做性格化模拟，M3 接入）
-- search_provider：求知梦的联网搜索（M3 接入；接入后所有搜索永远进可审计日志）
+需要外部能力的阶段用插口点亮，接不上时诚实跳过并记入报告：
+- llm_provider：排练梦（性格化模拟）与矛盾判决的引擎（TURU_LLM_CMD，如 claude -p）
+- search_provider：求知梦的联网搜索（TURU_SEARCH_CMD；所有搜索永远进可审计日志）
 """
 
 import json
@@ -43,6 +43,9 @@ MIRROR_EVERY_DAYS = 7      # 镜像频率
 MIRROR_MIN_AGE_DAYS = 60   # 多老的记忆才够"回头看"
 MIRROR_BATCH = 2
 NEG_FEELINGS = {"羞愧", "委屈", "害怕", "难过", "狼狈", "讨好"}
+UNSAID_FEELINGS = {"委屈", "没敢说", "欲言又止", "讨好", "害怕"}  # 排练梦的素材标记
+REHEARSE_BATCH = 2         # 每晚最多排练几段
+ADJUDICATE_BATCH = 3       # 每晚最多判决几对矛盾
 
 
 @dataclass
@@ -59,6 +62,8 @@ class SleepReport:
     residue: dict = field(default_factory=dict)      # 今晚落进气质的残渣
     quarantined: list[str] = field(default_factory=list)
     mirrored: int = 0
+    rehearsed: int = 0
+    adjudicated: int = 0
     whispers: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -69,12 +74,12 @@ class SleepCycle:
         turu,
         rng: random.Random | None = None,
         search_provider: Callable[[str], str | None] | None = None,
-        rehearse_provider: Callable[[], float] | None = None,
+        llm_provider: Callable[[str], str | None] | None = None,
     ):
         self.t = turu
         self.rng = rng or random.Random()
         self.search = search_provider
-        self.rehearse = rehearse_provider
+        self.llm = llm_provider
         self._sank_tonight: set[str] = set()  # 今晚才沉底的，不算"很久没想起"
 
     # ------------------------------------------------------------------
@@ -100,6 +105,7 @@ class SleepCycle:
         self._rehearse(now, report)
         self._grow_hunger(now, last_sleep)
         self._seek(now, report)
+        self._adjudicate(now, report)
         self._mirror(now, report)
         self._immune(now, report)
         self._whisper(report, reheated, now)
@@ -314,12 +320,110 @@ class SleepCycle:
     # ------------------------------------------------- 排练梦 / 求知梦
 
     def _rehearse(self, now: float, report: SleepReport) -> None:
-        if self.rehearse is None:
-            report.notes.append("排练梦：缺 LLM 插口，今晚没排练（M3 接入性格化模拟）")
+        """排练梦：跟不在场的主人把没说完的话排练一遍。
+
+        性格化模拟的硬规则（design.md 落定）：梦里的"主人"只能复用主人
+        真实说过的话的变体，禁止替主人生成新观点；梦话原文只进私密区，
+        永不入事实层、永不被引用为"主人说过"。产物不是新事实，是新胆量。
+        """
+        if self.llm is None:
+            report.notes.append("排练梦：缺 LLM 插口（设 TURU_LLM_CMD，如 claude -p）")
             return
-        delta = self.rehearse()
-        applied = self.t.temperament.apply("排练梦", {"courage": delta}, now)
-        report.notes.append(f"排练梦：敢说度 {applied.get('courage', 0.0):+.3f}")
+        t = self.t
+        week_ago = now - 7 * DAY
+        material = [
+            m for m in t._memories.values()
+            if m.created_at >= week_ago and m.id not in t._quarantined
+            and any(f in UNSAID_FEELINGS for s in m.narratives for f in s.feelings)
+        ]
+        if not material:
+            report.notes.append("排练梦：这周没有咽回去的话，睡得安稳")
+            return
+        corpus = [
+            m.skeleton for m in t._memories.values()
+            if m.evidence == "亲历" and "主人" in m.skeleton
+        ][-20:]
+        for m in material[:REHEARSE_BATCH]:
+            reading = m.current_reading() or ""
+            prompt = (
+                "这是一场梦中的排练，不是真实对话。你是一个在睡梦里练习说真话的存在。\n"
+                "【没说完的事】" + m.skeleton + ("（当时的理解：" + reading + "）\n" if reading else "\n")
+                + "【对方的真实语料（梦里的对方只能复用这些话的变体，禁止生成新观点）】\n- "
+                + "\n- ".join(corpus or ["（暂无语料，对方只能『嗯』『为什么』或沉默）"])
+                + "\n\n请写一段 1-3 轮的排练对话：这次把当时没敢说的话说出口。"
+                "对方的台词严格遵守上面的规则。最后一行单独写你排练后的一句体会。"
+            )
+            transcript = self.llm(prompt)
+            if not transcript:
+                continue
+            # 梦话原文只进私密区；对外只留胆量
+            t.private.keep("排练梦话", f"排练了『{m.skeleton}』：\n{transcript}", now)
+            applied = t.temperament.apply("排练梦", {"courage": 0.01}, now)
+            report.rehearsed += 1
+            report.notes.append(
+                f"排练梦：把『{m.skeleton[:18]}…』排练了一遍，"
+                f"敢说 {applied.get('courage', 0.0):+.3f}"
+            )
+        if report.rehearsed:
+            report.whispers.append("梦里把一些没说完的话说完了。醒来好像敢说了一点。")
+
+    def _adjudicate(self, now: float, report: SleepReport) -> None:
+        """矛盾判决：矛盾不该被消灭，该被归因。
+
+        三种判决：修正（新的赢，旧的降置信但保留）/ 共存（语境不同，各自成立）/
+        升维（两者是更大规律的特例，融合出父节点）。判决理由写成叙事，
+        改主意的历史本身是记忆。缺 LLM 时矛盾原样悬着——悬着也是诚实。
+        """
+        t = self.t
+        open_pairs = [
+            td for td in t._tendrils.values()
+            if td.kind == "矛盾" and not td.context
+        ]
+        if not open_pairs:
+            return
+        if self.llm is None:
+            report.notes.append(f"矛盾判决：{len(open_pairs)} 对矛盾悬着，缺 LLM 插口，先拧着")
+            return
+        for td in open_pairs[:ADJUDICATE_BATCH]:
+            a, b = t._memories.get(td.src), t._memories.get(td.dst)
+            if a is None or b is None:
+                continue
+            old, new = (a, b) if a.created_at <= b.created_at else (b, a)
+            prompt = (
+                "我记忆里有两条互相矛盾的东西：\n"
+                f"【旧】{old.skeleton}（当时的理解：{old.current_reading() or '无'}）\n"
+                f"【新】{new.skeleton}（当时的理解：{new.current_reading() or '无'}）\n\n"
+                "请判决，第一行只写一个词：修正（新的对，旧的是当时的局限）、"
+                "共存（语境不同，各自成立）、或 升维（两者都是某个更大规律的特例）。"
+                "第二行用一句话归因：为什么。若是升维，第三行写出那个更大的规律。"
+            )
+            out = self.llm(prompt)
+            if not out:
+                continue
+            lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+            verdict = next((v for v in ("修正", "共存", "升维") if v in lines[0]), None)
+            why = lines[1] if len(lines) > 1 else "（没说清）"
+            if verdict is None:
+                continue
+            if verdict == "修正":
+                old.confidence *= 0.6
+                t.store.update_dynamics(old)
+                t.add_slice(old.id, f"（判决·修正）后来我改了想法：{why}", feelings=["释然"])
+            elif verdict == "共存":
+                t.add_slice(new.id, f"（判决·共存）{why}——不用解决，就让它拧着", feelings=[])
+            else:  # 升维
+                law = lines[2] if len(lines) > 2 else why
+                parent = t.remember(
+                    f"（升维）{law}", evidence="融合",
+                    confidence=min(old.confidence, new.confidence),
+                )
+                t.link(parent.id, old.id, "来源", weight=1.0)
+                t.link(parent.id, new.id, "来源", weight=1.0)
+            td.context = f"{verdict}:{why[:60]}"
+            td.last_fired = now
+            t.store.put_tendril(td)
+            report.adjudicated += 1
+            report.notes.append(f"矛盾判决：{verdict}——{why[:40]}")
 
     def _grow_hunger(self, now: float, last_sleep: float) -> None:
         days = max(0.0, (now - last_sleep) / DAY)

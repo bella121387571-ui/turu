@@ -14,4 +14,7 @@ echo.
 echo ================ 上身检查 M3 ================
 %PY% tests\test_m3.py
 echo.
+echo ================ 梦语检查 M4 ================
+%PY% tests\test_m4.py
+echo.
 pause

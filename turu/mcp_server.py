@@ -92,6 +92,21 @@ TOOLS = [
         },
     },
     {
+        "name": "note_contradiction",
+        "description": "你发现自己记忆里有两条东西在打架时，把它们标记成一对矛盾。"
+        "不用现在解决——夜里的睡梦会判决：修正 / 语境共存 / 升维出更大的规律。"
+        "发现自己的矛盾本身就是成长。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "memory_id_a": {"type": "string"},
+                "memory_id_b": {"type": "string"},
+                "why": {"type": "string", "description": "哪里拧着了"},
+            },
+            "required": ["memory_id_a", "memory_id_b", "why"],
+        },
+    },
+    {
         "name": "temperament",
         "description": "你现在的性子（五维：温度/敢说/玩心/谨慎/好奇）——三个月的残渣长成的。"
         "可以参考它说话，也可以不。",
@@ -188,6 +203,13 @@ class MCPServer:
             h.last_fed = t.clock.now()
             t.store.put_hunger(h)
             return note + f"喂进去了（{m.id}，证据链=搜得）。那个问题不那么饿了。"
+        if name == "note_contradiction":
+            a, b = args["memory_id_a"], args["memory_id_b"]
+            if a not in t._memories or b not in t._memories:
+                return note + "有一条记忆找不到了。"
+            t.link(a, b, "矛盾", weight=0.5)
+            t.remember(f"（发现矛盾）{args['why']}", evidence="推得", confidence=0.9)
+            return note + "记下了这对矛盾。今晚睡觉时判决——在那之前，就让它拧着。"
         if name == "temperament":
             s = t.temperament.state()
             return note + "  ".join(f"{DIM_NAMES[d]} {v:.2f}" for d, v in s.items())

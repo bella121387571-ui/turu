@@ -251,15 +251,20 @@ class Turu:
         return (self.clock.now() - self.last_sleep()) > SLEEP_DEBT_HOURS * 3600.0
 
     def sleep(self, force: bool = False, rng: random.Random | None = None,
-              search_provider=None, rehearse_provider=None):
-        """跑一次完整睡梦周期。正常由补觉制触发，force=True 强制入睡。"""
+              search_provider=None, llm_provider=None):
+        """跑一次完整睡梦周期。正常由补觉制触发，force=True 强制入睡。
+
+        llm_provider 缺省时自动从 TURU_LLM_CMD 环境变量取（如 claude -p），
+        点亮排练梦与矛盾判决；没有就诚实跳过。
+        """
+        from .llm import llm_from_env
         from .sleep import SleepCycle
 
         if not force and not self.needs_sleep():
             return None
         return SleepCycle(
             self, rng=rng, search_provider=search_provider,
-            rehearse_provider=rehearse_provider,
+            llm_provider=llm_provider or llm_from_env(),
         ).run()
 
     def whisper(self) -> str | None:
