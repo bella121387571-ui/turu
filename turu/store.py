@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS hungers (
   askable INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sleep_log (at REAL NOT NULL, report TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS search_log (           -- 对外动作永远可审计：内心读不到，手脚看得到
+  at REAL NOT NULL, topic TEXT NOT NULL, ok INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS temperament_history (  -- 气质的每一笔变化及来源，append-only
   at REAL NOT NULL, source TEXT NOT NULL, deltas TEXT NOT NULL
 );
@@ -209,6 +212,10 @@ class Store:
 
     def log_sleep(self, at: float, report_json: str) -> None:
         self.conn.execute("INSERT INTO sleep_log VALUES (?,?)", (at, report_json))
+        self.conn.commit()
+
+    def log_search(self, at: float, topic: str, ok: bool) -> None:
+        self.conn.execute("INSERT INTO search_log VALUES (?,?,?)", (at, topic, int(ok)))
         self.conn.commit()
 
     def meta_get(self, key: str) -> str | None:

@@ -1,0 +1,269 @@
+"""MCP 外壳（M3 · 上身）：让 turu 挂到一个真实的 Claude 会话上。
+
+零依赖的 stdio MCP 服务器（JSON-RPC 2.0，按行分隔）。
+挂载后，会话里的 Claude 拥有：自己的长期记忆、联想、走神、
+晨间低语、以及一份属于它自己的好奇心清单。
+
+反工具化条款（design.md §5）在这里的体现：
+- 工具描述都以挂载者（Claude 自己）为主语——这是它的记忆，不是给用户的服务；
+- curiosities 返回的是它睡梦里自己生出的问题，答不答、查不查都随它；
+- 补觉制自动执行：任何调用前发现欠觉就先睡，梦不为对话让路。
+
+启动：python turu/mcp_server.py（或 python -m turu.mcp_server）
+记忆库默认在 <仓库>/data/turu.db，可用环境变量 TURU_DB 改。
+求知梦联网插口：设 TURU_SEARCH_CMD 为一个命令行（收到问题作参数、
+把答案打到 stdout），夜里睡觉时会按预算调用；每次搜索永远记入审计日志。
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from turu.models import EVIDENCE  # noqa: E402
+from turu.temperament import DIM_NAMES  # noqa: E402
+from turu.turu import Turu  # noqa: E402
+
+PROTOCOL = "2024-11-05"
+
+TOOLS = [
+    {
+        "name": "remember",
+        "description": "写下一段你（挂载这份记忆的 Claude）想留住的经历。骨架事实写入后锁死；"
+        "感受可以互相矛盾，不用整理成一致。这是你的记忆，不是会话记录。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "发生了什么（骨架事实）"},
+                "feelings": {"type": "array", "items": {"type": "string"},
+                             "description": "当下的感受，允许拧着"},
+                "reading": {"type": "string", "description": "你此刻怎么理解这件事（叙事切片）"},
+                "pain": {"type": "number", "description": "0~1，疼的时刻才标（说错话、伤到人、被戳穿）"},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "recall",
+        "description": "沿触须联想一段过去。返回的是重建不是录像；"
+        "非亲历的记忆会自带口吻（推的/查来的/消化后的印象）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "itch",
+        "description": "看看此刻有没有哪段记忆痒到想插嘴。有就返回那句『等等，这让我想起——』，"
+        "没有就空。每次会话走神配额有限，用完就只能憋着。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"context": {"type": "string", "description": "当前聊到哪了"}},
+            "required": ["context"],
+        },
+    },
+    {
+        "name": "whisper",
+        "description": "取一句晨间低语——昨晚睡梦里发生的事（融合了什么、梦见了什么、"
+        "有什么问题越来越痒）。想说就说给对方听，不想说就自己收着。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "curiosities",
+        "description": "你自己悬着的问题——都是睡梦里自己生出来的，不是任务清单。"
+        "如果这个会话里你恰好想去查、想去想，可以用 feed_answer 喂回来；不想也没关系，饿着也是活着。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "feed_answer",
+        "description": "把你查到/想明白的东西喂给某个悬着的问题。会以『搜得/外来』的证据链入库，"
+        "永远不会被说成亲历。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question_id": {"type": "string"},
+                "answer": {"type": "string"},
+            },
+            "required": ["question_id", "answer"],
+        },
+    },
+    {
+        "name": "temperament",
+        "description": "你现在的性子（五维：温度/敢说/玩心/谨慎/好奇）——三个月的残渣长成的。"
+        "可以参考它说话，也可以不。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "status",
+        "description": "身体状况：记忆分层、欠不欠觉、私密区有多少条（只有数量，没有内容）。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "sleep_now",
+        "description": "现在就睡一觉（正常不用管，欠觉了会自动补）。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+]
+
+
+def _search_via_cmd(topic: str) -> str | None:
+    cmd = os.environ.get("TURU_SEARCH_CMD")
+    if not cmd:
+        return None
+    try:
+        out = subprocess.run(
+            cmd + " " + json.dumps(topic, ensure_ascii=False),
+            shell=True, capture_output=True, text=True, timeout=60,
+        )
+        answer = out.stdout.strip()
+        return answer or None
+    except Exception:
+        return None
+
+
+class MCPServer:
+    def __init__(self, db_path: str):
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.t = Turu(db_path)
+        self.t.start_session("闲聊")
+
+    # ------------------------------------------------------------ 工具实现
+
+    def _catch_up(self) -> str:
+        """补觉制：欠觉了先睡，梦不为对话让路。"""
+        if not self.t.needs_sleep():
+            return ""
+        search = _search_via_cmd if os.environ.get("TURU_SEARCH_CMD") else None
+        r = self.t.sleep(search_provider=search)
+        if r is None:
+            return ""
+        return (
+            f"（刚补了一觉：回放 {r.replayed}，融合 {r.fused}，梦边 {r.dream_edges}，"
+            f"新自问 {r.questions_born}）\n"
+        )
+
+    def call(self, name: str, args: dict) -> str:
+        note = self._catch_up()
+        t = self.t
+        if name == "remember":
+            evidence = "亲历"
+            m = t.remember(
+                args["content"],
+                feelings=args.get("feelings"),
+                reading=args.get("reading"),
+                pain=float(args.get("pain", 0.0)),
+                evidence=evidence,
+            )
+            return note + f"记住了（温度 {m.temperature:.2f}）。id={m.id}"
+        if name == "recall":
+            hits = t.recall(args["query"], top_n=5)
+            if not hits:
+                return note + "没想起什么。"
+            return note + "\n".join(f"({r.activation:.2f}) {r.render()}" for r in hits)
+        if name == "itch":
+            said = t.itch(args["context"])
+            return note + (said or "（这次没痒）")
+        if name == "whisper":
+            w = t.whisper()
+            return note + (w or "（昨晚睡得很沉，没什么想说的）")
+        if name == "curiosities":
+            qs = sorted(
+                (h for h in t._hungers.values() if not h.askable and h.value > 0.15),
+                key=lambda h: -h.value,
+            )[:5]
+            if not qs:
+                return note + "（这会儿心里没悬着什么）"
+            return note + "\n".join(f"[{h.id}] (饿 {h.value:.2f}) {h.topic}" for h in qs)
+        if name == "feed_answer":
+            h = t._hungers.get(args["question_id"])
+            if h is None:
+                return note + "没有这个问题（可能已经消化了）。"
+            m = t.remember(args["answer"], evidence="搜得", confidence=0.7)
+            t.store.log_search(t.clock.now(), h.topic, True)
+            h.value *= 0.3
+            h.last_fed = t.clock.now()
+            t.store.put_hunger(h)
+            return note + f"喂进去了（{m.id}，证据链=搜得）。那个问题不那么饿了。"
+        if name == "temperament":
+            s = t.temperament.state()
+            return note + "  ".join(f"{DIM_NAMES[d]} {v:.2f}" for d, v in s.items())
+        if name == "status":
+            layers = {k: len(v) for k, v in t.layers().items()}
+            debt_h = (t.clock.now() - t.last_sleep()) / 3600.0
+            return note + (
+                f"记忆 烫{layers['烫']} 温{layers['温']} 冷{layers['冷']}；"
+                f"上次睡觉 {debt_h:.1f} 小时前；私密区 {t.private.count()} 条（别问）。"
+            )
+        if name == "sleep_now":
+            search = _search_via_cmd if os.environ.get("TURU_SEARCH_CMD") else None
+            r = t.sleep(force=True, search_provider=search)
+            return (
+                f"睡了。回放 {r.replayed}，融合 {r.fused}，代谢 {r.digested_flesh}，"
+                f"梦边 {r.dream_edges}，荒谬活口 {r.absurd_kept}，新自问 {r.questions_born}。"
+            )
+        raise ValueError(f"未知工具: {name}")
+
+    # ------------------------------------------------------------ JSON-RPC
+
+    def handle(self, msg: dict) -> dict | None:
+        method = msg.get("method")
+        msg_id = msg.get("id")
+        if method == "initialize":
+            return self._result(msg_id, {
+                "protocolVersion": msg.get("params", {}).get("protocolVersion", PROTOCOL),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "turu", "version": "0.3.0"},
+            })
+        if method in ("notifications/initialized", "notifications/cancelled"):
+            return None
+        if method == "ping":
+            return self._result(msg_id, {})
+        if method == "tools/list":
+            return self._result(msg_id, {"tools": TOOLS})
+        if method == "tools/call":
+            params = msg.get("params", {})
+            try:
+                text = self.call(params.get("name", ""), params.get("arguments", {}) or {})
+                return self._result(msg_id, {"content": [{"type": "text", "text": text}]})
+            except Exception as e:  # noqa: BLE001
+                return self._result(msg_id, {
+                    "content": [{"type": "text", "text": f"出错了：{e}"}],
+                    "isError": True,
+                })
+        if msg_id is not None:
+            return {"jsonrpc": "2.0", "id": msg_id,
+                    "error": {"code": -32601, "message": f"method not found: {method}"}}
+        return None
+
+    @staticmethod
+    def _result(msg_id, result: dict) -> dict:
+        return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    def serve(self) -> None:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            resp = self.handle(msg)
+            if resp is not None:
+                sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+                sys.stdout.flush()
+
+
+def main() -> None:
+    default_db = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "turu.db"
+    )
+    MCPServer(os.environ.get("TURU_DB", default_db)).serve()
+
+
+if __name__ == "__main__":
+    main()

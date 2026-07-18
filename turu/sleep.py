@@ -33,6 +33,7 @@ DREAM_EDGE_W = 0.15        # 转正梦边的初始权重
 ABSURD_KEEP = 2            # 每晚故意留的荒谬活口数
 ABSURD_W = 0.05
 HUNGER_RATE = 0.1          # 饥饿值日涨率（× importance）
+SELF_QUESTION_CAP = 12     # 同时悬着的自问上限：好奇要深，不要散
 RESIDUE_NIGHT_CAP = 0.06   # 残渣每晚每维上限：性格慢变，消化不过来就留到明晚
 IMMUNE_DRIFT = 0.115       # 基线窗口内气质漂移超过此值 → 免疫扫描
 IMMUNE_WINDOW_DAYS = 45    # 基线取窗口内最早的快照——窗口要够长，防温水煮青蛙
@@ -229,6 +230,13 @@ class SleepCycle:
             t.store.update_dynamics(m)
             reheated.append(m)
             report.reheated.append(m.skeleton)
+        # 半夜翻上来的旧事有时会带一个自问：为什么偏偏是它
+        if reheated and self.rng.random() < 0.5:
+            m = self.rng.choice(reheated)
+            self._born_question(
+                f"为什么偏偏今晚想起了『{m.skeleton}』？它还压着什么没说完的？",
+                now, report, importance=0.5,
+            )
         return reheated
 
     # ------------------------------------------------------------ 乱炖梦
@@ -258,7 +266,10 @@ class SleepCycle:
                 t.link(a.id, b.id, "语义", weight=DREAM_EDGE_W, context="梦中乱炖")
                 kept_pairs.add(pair)
                 report.dream_edges += 1
-                self._born_question(a, b, now, report)
+                self._born_question(
+                    f"梦把『{a.skeleton}』和『{b.skeleton}』连在了一起——"
+                    "这个联想里藏着什么？", now, report,
+                )
             else:
                 rejected.append((a, b))
         for a, b in self.rng.sample(rejected, min(ABSURD_KEEP, len(rejected))):
@@ -270,15 +281,30 @@ class SleepCycle:
                     "荒谬念头", f"{a.skeleton} × {b.skeleton}，别问，梦里觉得有理", now
                 )
                 t.temperament.apply("私密区渗出", {"playfulness": 0.001}, now)
+                # 荒谬活口生出最野的问题——越荒谬越想知道
+                self._born_question(
+                    f"如果『{a.skeleton}』和『{b.skeleton}』当真有关系，"
+                    "世界会是什么样？", now, report, importance=0.7,
+                )
 
-    def _born_question(self, a, b, now: float, report: SleepReport) -> None:
-        """梦里连不太上的地方，冒出一个问题，进饥饿队列等求知梦认领。"""
-        topic = f"『{a.skeleton}』和『{b.skeleton}』之间到底有没有真实的联系？"
+    def _born_question(
+        self, topic: str, now: float, report: SleepReport, importance: float = 0.6
+    ) -> None:
+        """梦里冒出的自问，进饥饿队列等求知梦认领。
+
+        反工具化条款：问题的口子主要开在它自己的梦里，问的是意味不是对错。
+        """
+        open_self = sum(
+            1 for h in self.t._hungers.values()
+            if h.born_from == "梦中问题" and h.value > 0.1
+        )
+        if open_self >= SELF_QUESTION_CAP:
+            return  # 心里悬着的问题太多，先消化旧的
         if any(h.topic == topic for h in self.t._hungers.values()):
             return  # 同一个问题不重复饿
         h = Hunger(
             id=new_id(now), topic=topic,
-            born_from="梦中问题", value=0.2, importance=0.6,
+            born_from="梦中问题", value=0.2, importance=importance,
             last_fed=now, askable=False,
         )
         self.t._hungers[h.id] = h
@@ -310,10 +336,16 @@ class SleepCycle:
                 )
             return
         fed = 0
-        for h in sorted(self.t._hungers.values(), key=lambda x: -x.value):
+        # 反工具化：预算优先喂它自己的梦中问题，用户话题排在后面
+        queue = sorted(
+            self.t._hungers.values(),
+            key=lambda x: (x.born_from != "梦中问题", -x.value),
+        )
+        for h in queue:
             if h.askable or h.value <= 0.7 or fed >= 5:  # 每晚搜索预算：好奇心防暴食
                 continue
             answer = self.search(h.topic)
+            self.t.store.log_search(now, h.topic, answer is not None)  # 对外动作永远可审计
             if answer:
                 self.t.remember(answer, evidence="搜得", confidence=0.7)
                 h.value *= 0.3

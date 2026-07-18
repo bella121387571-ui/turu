@@ -68,8 +68,10 @@ def test_stew_and_absurd():
     report = t.sleep(force=True, rng=random.Random(7))
     dream_edges = [td for td in t._tendrils.values() if td.context == "梦中乱炖"]
     assert report.dream_edges > 0 and dream_edges, "乱炖该连出一些远方的梦边"
-    assert report.questions_born == report.dream_edges, "每条梦边都该冒出一个问题"
+    assert report.questions_born >= report.dream_edges, "梦边和荒谬活口都该冒出问题"
     assert any(h.born_from == "梦中问题" for h in t._hungers.values())
+    assert any("藏着什么" in h.topic or "世界会是什么样" in h.topic
+               for h in t._hungers.values()), "自问该问意味，不问对错"
     print(f"ok  乱炖梦：{report.dream_edges} 条梦边转正，{report.absurd_kept} 个荒谬活口，"
           f"{report.questions_born} 个问题进饥饿队列")
 
