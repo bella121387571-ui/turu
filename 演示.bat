@@ -8,4 +8,7 @@ echo.
 echo ============ 演示二：睡几晚，看它做梦 ============
 %PY% examples\demo_sleep.py
 echo.
+echo ============ 演示三：三个月，看它长性格 ============
+%PY% examples\demo_person.py
+echo.
 pause

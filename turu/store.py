@@ -39,6 +39,21 @@ CREATE TABLE IF NOT EXISTS hungers (
   askable INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sleep_log (at REAL NOT NULL, report TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS temperament_history (  -- 气质的每一笔变化及来源，append-only
+  at REAL NOT NULL, source TEXT NOT NULL, deltas TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS temperament_snapshots ( -- 夜间快照，免疫系统的基线
+  at REAL NOT NULL, state TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS quarantine (            -- 免疫隔离区：只封影响力，不动事实
+  memory_id TEXT PRIMARY KEY, at REAL NOT NULL, reason TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS digested_memories (     -- 已代谢标记：残渣只落一次
+  memory_id TEXT PRIMARY KEY, at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS private_zone (          -- 私密区：接口永不返回内容
+  id TEXT PRIMARY KEY, at REAL NOT NULL, kind TEXT NOT NULL, data BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
 
@@ -138,6 +153,57 @@ class Store:
                    importance=r[4], last_fed=r[5], askable=bool(r[6]))
             for r in rows
         ]
+
+    # ---- temperament ----
+
+    def log_temperament(self, at: float, source: str, deltas_json: str) -> None:
+        self.conn.execute(
+            "INSERT INTO temperament_history VALUES (?,?,?)", (at, source, deltas_json)
+        )
+        self.conn.commit()
+
+    def temperament_history(self) -> list[tuple[float, str, str]]:
+        return self.conn.execute(
+            "SELECT at, source, deltas FROM temperament_history ORDER BY at"
+        ).fetchall()
+
+    def log_temperament_snapshot(self, at: float, state_json: str) -> None:
+        self.conn.execute("INSERT INTO temperament_snapshots VALUES (?,?)", (at, state_json))
+        self.conn.commit()
+
+    def temperament_snapshots(self) -> list[tuple[float, str]]:
+        return self.conn.execute(
+            "SELECT at, state FROM temperament_snapshots ORDER BY at"
+        ).fetchall()
+
+    # ---- 免疫隔离 / 代谢标记 ----
+
+    def add_quarantine(self, memory_id: str, at: float, reason: str) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO quarantine VALUES (?,?,?)", (memory_id, at, reason)
+        )
+        self.conn.commit()
+
+    def quarantined_ids(self) -> set[str]:
+        return {r[0] for r in self.conn.execute("SELECT memory_id FROM quarantine")}
+
+    def mark_digested(self, memory_id: str, at: float) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO digested_memories VALUES (?,?)", (memory_id, at)
+        )
+        self.conn.commit()
+
+    def digested_ids(self) -> set[str]:
+        return {r[0] for r in self.conn.execute("SELECT memory_id FROM digested_memories")}
+
+    # ---- 私密区（只写与计数，永不返回内容） ----
+
+    def private_put(self, id_: str, at: float, kind: str, data: bytes) -> None:
+        self.conn.execute("INSERT INTO private_zone VALUES (?,?,?,?)", (id_, at, kind, data))
+        self.conn.commit()
+
+    def private_count(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM private_zone").fetchone()[0]
 
     # ---- sleep log & meta ----
 

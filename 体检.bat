@@ -8,4 +8,7 @@ echo.
 echo ================ 睡梦检查 M1 ================
 %PY% tests\test_m1.py
 echo.
+echo ================ 性子检查 M2 ================
+%PY% tests\test_m2.py
+echo.
 pause

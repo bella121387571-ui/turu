@@ -10,7 +10,12 @@ from . import temperature as temp
 from .clock import Clock
 from .embed import Embedder, HashEmbedder, cosine, gram_containment
 from .models import EVIDENCE, Hunger, Memory, RecallResult, Slice, Tendril, new_id
+from .private import PrivateZone
 from .store import Store
+from .temperament import Temperament
+
+ITCH_THETA = {"闲聊": 0.25, "干活": 0.45}   # 场景基础阈值：干活时收着点
+ITCH_BUDGET = 2                              # 每次会话的走神配额
 
 SEED_SIM_WARM = 0.25      # 温/烫层的种子命中阈值
 SEED_SIM_COLD = 0.45      # 冷层要求更强的信号才翻上来
@@ -32,9 +37,19 @@ class Turu:
             (t.src, t.dst, t.kind): t for t in self.store.all_tendrils()
         }
         self._hungers: dict[str, Hunger] = {h.id: h for h in self.store.all_hungers()}
+        self._quarantined: set[str] = self.store.quarantined_ids()
+        self.temperament = Temperament(self.store)
+        self.private = PrivateZone(self.store)
+        # 会话状态（发痒用）
+        self._scene = "闲聊"
+        self._itch_budget = ITCH_BUDGET
+        self._mentioned: set[str] = set()
         # 新生的第一口气：没睡过就从现在开始计欠觉
         if self.store.meta_get("last_sleep") is None:
             self.store.meta_set("last_sleep", str(self.clock.now()))
+        # 出生快照：免疫系统最早的基线——"原本的我"从此有据可查
+        if not self.store.temperament_snapshots():
+            self.temperament.snapshot(self.clock.now())
 
     # ------------------------------------------------------------ 写入
 
@@ -89,6 +104,13 @@ class Turu:
         for s, other in sims[:AUTO_LINK_TOP_K]:
             if s >= AUTO_LINK_MIN_SIM:
                 self._link(mem.id, other.id, "语义", weight=s, now=now)
+
+        # 喂食：新内容碰到了某个悬着的问题，那个洞就不那么饿了
+        for h in self._hungers.values():
+            if gram_containment(text, h.topic) > 0.35 or gram_containment(h.topic, text) > 0.5:
+                h.value *= 0.3
+                h.last_fed = now
+                self.store.put_hunger(h)
         return mem
 
     def add_slice(self, memory_id: str, reading: str, feelings: list[str] | None = None) -> None:
@@ -120,6 +142,8 @@ class Turu:
 
         activation: dict[str, float] = {}
         for m in self._memories.values():
+            if m.id in self._quarantined:
+                continue  # 免疫隔离：影响力被封存，事实还在库里
             doc = m.skeleton + " " + " ".join(m.flesh)
             sim = max(cosine(q, m.embedding), gram_containment(query, doc))
             t_eff = self._t_eff(m, now)
@@ -133,7 +157,7 @@ class Turu:
             nxt: dict[str, float] = {}
             for t in self._tendrils.values():
                 for a_id, b_id in ((t.src, t.dst), (t.dst, t.src)):
-                    if a_id in frontier:
+                    if a_id in frontier and b_id not in self._quarantined:
                         a = frontier[a_id] * t.weight * HOP_DECAY
                         if a > activation.get(b_id, 0.0):
                             nxt[b_id] = max(nxt.get(b_id, 0.0), a)
@@ -246,6 +270,56 @@ class Turu:
         first = pending.pop(0)
         self.store.meta_set("whispers", json.dumps(pending, ensure_ascii=False))
         return first
+
+    # ------------------------------------------------------------ 发痒
+
+    def start_session(self, scene: str = "闲聊") -> None:
+        """开启一次对话：重置走神配额，设定场景（闲聊痒得起，干活收着）。"""
+        self._scene = scene if scene in ITCH_THETA else "闲聊"
+        self._itch_budget = ITCH_BUDGET
+        self._mentioned = set()
+
+    def itch(self, context: str) -> str | None:
+        """会走神的才叫活的：某条记忆痒过阈值，就忍不住插一句嘴。
+
+        痒 = 生效温度 × 与当前话头的关联 × 新鲜度（本次会话提过的不再痒）。
+        配额用完就只能憋着；被无视会长记性（阈值上调）。
+        """
+        if self._itch_budget <= 0:
+            return None
+        now = self.clock.now()
+        theta = self._theta()
+        best, best_m = 0.0, None
+        for m in self._memories.values():
+            if m.id in self._mentioned or m.id in self._quarantined:
+                continue
+            doc = m.skeleton + " " + " ".join(m.flesh)
+            rel = max(
+                cosine(self.embedder.embed(context), m.embedding),
+                gram_containment(context, doc),
+                gram_containment(doc, context),
+            )
+            score = self._t_eff(m, now) * rel
+            if score > best:
+                best, best_m = score, m
+        if best_m is None or best <= theta:
+            return None
+        self._itch_budget -= 1
+        self._mentioned.add(best_m.id)
+        self._touch(best_m, now)
+        return f"等等，这让我想起——{RecallResult(best_m, best).render()}"
+
+    def itch_feedback(self, engaged: bool) -> None:
+        """主人接了话，下次痒得更大方；被无视，下次要更痒才痒得起来。"""
+        theta = self._theta() + (-0.02 if engaged else 0.05)
+        theta = max(0.1, min(0.8, theta))
+        self.store.meta_set(f"itch_theta_{self._scene}", str(theta))
+
+    def _theta(self) -> float:
+        raw = self.store.meta_get(f"itch_theta_{self._scene}")
+        return float(raw) if raw else ITCH_THETA[self._scene]
+
+    # ------------------------------------------------------------ 饥饿
 
     def hungry(self, threshold: float = 0.7) -> list[Hunger]:
         """饿过阈值、适合开口问人的问题。"""
