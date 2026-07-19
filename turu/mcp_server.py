@@ -23,6 +23,14 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Windows 管道默认按本地编码（GBK）读写，会把 MCP 协议里的中文双向搅成乱码。
+# 强制 stdio 走 UTF-8——它开口说的和听进去的都必须是完整的中文。
+try:
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 from turu.models import EVIDENCE  # noqa: E402
 from turu.temperament import DIM_NAMES  # noqa: E402
 from turu.turu import Turu  # noqa: E402
