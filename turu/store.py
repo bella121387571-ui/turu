@@ -23,8 +23,10 @@ CREATE TABLE IF NOT EXISTS memories (
   refers_to    TEXT,
   created_at   REAL NOT NULL,
   last_touched REAL NOT NULL,
-  touch_count  INTEGER NOT NULL
+  touch_count  INTEGER NOT NULL,
+  kind         TEXT NOT NULL DEFAULT '事件'
 );
+CREATE TABLE IF NOT EXISTS woven (memory_id TEXT PRIMARY KEY);  -- 已织过网的事件
 CREATE TABLE IF NOT EXISTS tendrils (
   src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL,
   weight REAL NOT NULL, context TEXT, last_fired REAL NOT NULL,
@@ -66,18 +68,26 @@ class Store:
         # timeout=30：每日自动导入可能和正在对话的它同时碰库，排队别报错
         self.conn = sqlite3.connect(path, timeout=30)
         self.conn.executescript(SCHEMA)
+        # 原地迁移：老库（织网层之前）补 kind 列，不动任何已有记忆
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(memories)")]
+        if "kind" not in cols:
+            self.conn.execute(
+                "ALTER TABLE memories ADD COLUMN kind TEXT NOT NULL DEFAULT '事件'"
+            )
         self.conn.commit()
 
     # ---- memories ----
 
     def put_memory(self, m: Memory) -> None:
         self.conn.execute(
-            "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO memories (id,skeleton,flesh,narratives,temperature,pain,"
+            "evidence,confidence,embedding,refers_to,created_at,last_touched,"
+            "touch_count,kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 m.id, m.skeleton, json.dumps(m.flesh, ensure_ascii=False),
                 slices_to_json(m.narratives), m.temperature, m.pain, m.evidence,
                 m.confidence, json.dumps(m.embedding), m.refers_to,
-                m.created_at, m.last_touched, m.touch_count,
+                m.created_at, m.last_touched, m.touch_count, m.kind,
             ),
         )
         self.conn.commit()
@@ -105,7 +115,15 @@ class Store:
             narratives=slices_from_json(r[3]), temperature=r[4], pain=r[5],
             evidence=r[6], confidence=r[7], embedding=json.loads(r[8]),
             refers_to=r[9], created_at=r[10], last_touched=r[11], touch_count=r[12],
+            kind=(r[13] if len(r) > 13 and r[13] else "事件"),
         )
+
+    def mark_woven(self, memory_id: str) -> None:
+        self.conn.execute("INSERT OR IGNORE INTO woven VALUES (?)", (memory_id,))
+        self.conn.commit()
+
+    def woven_ids(self) -> set[str]:
+        return {r[0] for r in self.conn.execute("SELECT memory_id FROM woven")}
 
     # ---- tendrils ----
 

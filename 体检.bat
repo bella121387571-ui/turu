@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-where python >/dev/null 2>/dev/null && (set PY=python) || (set PY=py)
+where python >nul 2>nul && (set PY=python) || (set PY=py)
 echo ================ 心跳检查 M0 ================
 %PY% tests\test_m0.py
 echo.
@@ -22,5 +22,8 @@ echo ================ 导入检查 ====================
 echo.
 echo ================ 近况页检查 ==================
 %PY% tests\test_web.py
+echo.
+echo ================ 织网检查 ====================
+%PY% tests\test_weave.py
 echo.
 pause

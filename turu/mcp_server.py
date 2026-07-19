@@ -100,6 +100,17 @@ TOOLS = [
         },
     },
     {
+        "name": "about",
+        "description": "看你记忆里某个『点』的脉络：它的时间切片史（你对它的理解是怎么一层层"
+        "变过来的）和它向外伸的各支触须（同现/因果/矛盾/时序……）。"
+        "点是夜里织网时从反复出现的经历里自己长出来的。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"topic": {"type": "string", "description": "点的名字或相近说法"}},
+            "required": ["topic"],
+        },
+    },
+    {
         "name": "note_contradiction",
         "description": "你发现自己记忆里有两条东西在打架时，把它们标记成一对矛盾。"
         "不用现在解决——夜里的睡梦会判决：修正 / 语境共存 / 升维出更大的规律。"
@@ -211,6 +222,9 @@ class MCPServer:
             h.last_fed = t.clock.now()
             t.store.put_hunger(h)
             return note + f"喂进去了（{m.id}，证据链=搜得）。那个问题不那么饿了。"
+        if name == "about":
+            out = t.about(args["topic"])
+            return note + (out or "记忆里还没长出这个点——多聊几次它自己会长出来。")
         if name == "note_contradiction":
             a, b = args["memory_id_a"], args["memory_id_b"]
             if a not in t._memories or b not in t._memories:

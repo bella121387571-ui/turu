@@ -151,14 +151,19 @@ class Turu:
             if sim >= threshold:
                 activation[m.id] = max(activation.get(m.id, 0.0), sim)
 
-        # 沿触须传播（无向），3 跳，每跳衰减
+        # 沿触须传播（无向），3 跳，每跳衰减；枢纽点降权防洪
+        degree: dict[str, int] = {}
+        for t in self._tendrils.values():
+            degree[t.src] = degree.get(t.src, 0) + 1
+            degree[t.dst] = degree.get(t.dst, 0) + 1
         frontier = dict(activation)
         for _ in range(MAX_HOPS):
             nxt: dict[str, float] = {}
             for t in self._tendrils.values():
                 for a_id, b_id in ((t.src, t.dst), (t.dst, t.src)):
                     if a_id in frontier and b_id not in self._quarantined:
-                        a = frontier[a_id] * t.weight * HOP_DECAY
+                        damp = 1.0 + 0.2 * max(0, degree.get(b_id, 0) - 4)
+                        a = frontier[a_id] * t.weight * HOP_DECAY / damp
                         if a > activation.get(b_id, 0.0):
                             nxt[b_id] = max(nxt.get(b_id, 0.0), a)
             for k, v in nxt.items():
@@ -204,6 +209,70 @@ class Turu:
         for m in self._memories.values():
             out[temp.layer(self._t_eff(m, now))].append(m)
         return out
+
+    # ------------------------------------------------------------ 记忆点
+
+    def get_or_create_point(self, name: str, at: float | None = None) -> tuple[Memory, bool]:
+        """找到（或长出）一个记忆点。点的身份是名字——内容变了是切片，点还是那个点。"""
+        for m in self._memories.values():
+            if m.kind == "概念" and m.skeleton == name:
+                return m, False
+        now = at if at is not None else self.clock.now()
+        p = Memory(
+            id=new_id(now), skeleton=name, flesh=[], narratives=[],
+            temperature=0.5, pain=0.0, evidence="融合", confidence=0.9,
+            embedding=self.embedder.embed(name), refers_to=None,
+            created_at=now, last_touched=now, kind="概念",
+        )
+        self._memories[p.id] = p
+        self.store.put_memory(p)
+        return p, True
+
+    def about(self, topic: str) -> str | None:
+        """看一个记忆点的脉络：时间切片史 + 向外伸的各支触须。"""
+        best, best_s = None, 0.0
+        for m in self._memories.values():
+            if m.kind != "概念":
+                continue
+            s = max(
+                gram_containment(m.skeleton, topic),
+                gram_containment(topic, m.skeleton),
+            )
+            if s > best_s:
+                best, best_s = m, s
+        if best is None or best_s < 0.5:
+            return None
+        now = self.clock.now()
+        self._touch(best, now)
+
+        lines = [f"『{best.skeleton}』——{len(best.narratives)} 段时间切片："]
+        for s in best.narratives[-8:]:
+            import time as _time
+            day = _time.strftime("%Y-%m-%d", _time.localtime(s.at))
+            lines.append(f"  {day} · {s.reading}" + (f" {s.feelings}" if s.feelings else ""))
+        if len(best.narratives) > 8:
+            lines.insert(1, f"  （更早的 {len(best.narratives) - 8} 层沉在下面）")
+
+        branches: dict[str, list[tuple[float, str]]] = {}
+        for td in self._tendrils.values():
+            other_id = td.dst if td.src == best.id else td.src if td.dst == best.id else None
+            if other_id is None or other_id in self._quarantined:
+                continue
+            other = self._memories.get(other_id)
+            if other is None:
+                continue
+            label = other.skeleton if other.kind == "概念" else other.skeleton[:24]
+            branches.setdefault(td.kind, []).append((td.weight, label))
+        if branches:
+            lines.append("向外伸的触须：")
+            for kind in ("同现", "因果", "矛盾", "语境", "时序", "语义", "关于"):
+                if kind not in branches:
+                    continue
+                tops = sorted(branches[kind], reverse=True)[:3]
+                targets = "；".join(f"{name}({w:.1f})" for w, name in tops)
+                extra = len(branches[kind]) - len(tops)
+                lines.append(f"  {kind} → {targets}" + (f" …还有 {extra} 支" if extra > 0 else ""))
+        return "\n".join(lines)
 
     # ------------------------------------------------------------ 相似与图
 

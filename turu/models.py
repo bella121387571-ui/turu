@@ -46,6 +46,7 @@ class Memory:
     created_at: float
     last_touched: float
     touch_count: int = 0
+    kind: str = "事件"          # 事件（那天发生的）| 概念（长出来的单点，身份=名字，切片=历史）
 
     def current_reading(self) -> str | None:
         return self.narratives[-1].reading if self.narratives else None
@@ -55,7 +56,7 @@ class Memory:
 class Tendril:
     src: str
     dst: str
-    kind: str                  # 语义 | 因果 | 时序 | 矛盾 | 语境 | 来源（融合的证据链，不衰减）
+    kind: str                  # 语义 | 因果 | 时序 | 矛盾 | 语境 | 关于（事件→点）| 同现（点—点）| 来源（不衰减）
     weight: float
     context: str | None = None
     last_fired: float = 0.0
@@ -83,6 +84,14 @@ class RecallResult:
 
     def render(self) -> str:
         m = self.memory
+        if m.kind == "概念":
+            n = len(m.narratives)
+            latest = m.current_reading()
+            return (
+                f"『{m.skeleton}』（记忆点，{n} 段时间切片"
+                + (f"；最近一层：{latest}" if latest else "")
+                + "——用 about 看完整脉络）"
+            )
         parts = [m.skeleton]
         if m.flesh:
             parts.append("细节：" + "；".join(m.flesh))

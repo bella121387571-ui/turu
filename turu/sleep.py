@@ -15,7 +15,7 @@ from typing import Callable
 
 from . import temperature as temp
 from .clock import DAY
-from .models import Hunger, new_id
+from .models import Hunger, Slice, new_id
 from .temperament import DIM_NAMES
 
 SLEEP_DEBT_HOURS = 20      # 补觉制：超过 20 小时没睡就欠觉
@@ -46,6 +46,14 @@ NEG_FEELINGS = {"羞愧", "委屈", "害怕", "难过", "狼狈", "讨好"}
 UNSAID_FEELINGS = {"委屈", "没敢说", "欲言又止", "讨好", "害怕"}  # 排练梦的素材标记
 REHEARSE_BATCH = 2         # 每晚最多排练几段
 ADJUDICATE_BATCH = 3       # 每晚最多判决几对矛盾
+WEAVE_BATCH = 60           # 织网：每晚最多处理的事件数（积压慢慢织）
+POINT_MIN_DF = 3           # 一个词至少出现在几条事件里才够格成点
+POINT_MAX_DF_RATIO = 0.5   # 出现在超过一半事件里的词太泛，不成点（"主人"之类）
+POINT_STOP = set(
+    "的了我你他她它们是在有和就不都很也这那说过跟给对吗吧呢啊哦嗯"
+    "什么怎么可以觉得知道现在时候一个没有还是自己因为所以如果然后"
+    "今天昨天明天已经开始其实真的一下有点这个那个我们你们他们聊过"
+)
 
 
 @dataclass
@@ -64,6 +72,8 @@ class SleepReport:
     mirrored: int = 0
     rehearsed: int = 0
     adjudicated: int = 0
+    woven: int = 0             # 今晚织进网里的事件数
+    new_points: int = 0        # 今晚新长出的记忆点
     whispers: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -96,6 +106,7 @@ class SleepCycle:
         replay = {m.id: m for m in hot + recent}
         report.replayed = len(replay)
 
+        self._weave(now, report)
         self._consolidate(list(replay.values()), now, report)
         self._metabolize(mems, now, report)
         self._decay_tendrils(last_sleep, report)
@@ -115,6 +126,135 @@ class SleepCycle:
         t.store.meta_set("last_sleep", str(now))
         return report
 
+    # ------------------------------------------------------------ 织网
+
+    def _weave(self, now: float, report: SleepReport) -> None:
+        """把散落的事件织进网里——单点、多支联想线、时间切片在这里成形。
+
+        - 单点：反复出现的东西长成『记忆点』（概念节点，身份=名字）
+        - 多支：事件—关于→点；同一事件里的点互相长『同现』边；
+          相邻事件之间长『时序』边——一个点向外伸的是不同性质的触须
+        - 时间切片：每次有事件提到某个点，就往点上叠一层切片，
+          "我四月怎么理解它、七月怎么理解它"从此有形
+        有 LLM 时由它提炼概念名；离线时用词频：反复出现的词自己长成点。
+        """
+        t = self.t
+        woven = t.store.woven_ids()
+        targets = sorted(
+            (m for m in t._memories.values()
+             if m.kind == "事件" and m.id not in woven),
+            key=lambda m: m.created_at,
+        )[:WEAVE_BATCH]
+        if not targets:
+            return
+
+        events = [m for m in t._memories.values() if m.kind == "事件"]
+        df: dict[str, int] = {}
+        for m in events:
+            grams = set()
+            text = m.skeleton
+            for length in range(2, 7):
+                for i in range(len(text) - length + 1):
+                    grams.add(text[i : i + length])
+            for g in grams:
+                df[g] = df.get(g, 0) + 1
+
+        llm_names = self._weave_llm_names(targets) if self.llm else {}
+
+        prev = None
+        for m in targets:
+            names = llm_names.get(m.id) or self._gram_concepts(m.skeleton, df, len(events))
+            points = []
+            for name in names[:3]:
+                p, created = t.get_or_create_point(name, m.created_at)
+                if created:
+                    report.new_points += 1
+                    # 追认前史：点出生时，把此前所有提到过它的旧事件收进传记——
+                    # 一个点的历史，包含它被命名之前的日子
+                    self._attach_slice_edges(
+                        p, [e for e in events if name in e.skeleton]
+                    )
+                self._attach_slice_edges(p, [m])
+                points.append(p)
+            # 同现：同一段经历里出现的点，彼此长边（增量加粗）
+            for i, a in enumerate(points):
+                for b in points[i + 1 :]:
+                    key = (a.id, b.id, "同现")
+                    cur = t._tendrils.get(key) or t._tendrils.get((b.id, a.id, "同现"))
+                    w = min(1.0, (cur.weight if cur else 0.1) + 0.1)
+                    t.link(a.id, b.id, "同现", weight=w)
+            # 时序：时间上挨着的事件（两小时内，含同时）连一根细的时序触须
+            if prev is not None and 0 <= m.created_at - prev.created_at < 7200:
+                t.link(prev.id, m.id, "时序", weight=0.3)
+            prev = m
+            t.store.mark_woven(m.id)
+            report.woven += 1
+        if report.new_points:
+            report.notes.append(f"织网：长出 {report.new_points} 个新记忆点")
+
+    def _attach_slice_edges(self, p, events: list) -> None:
+        """把若干事件挂到点上：一条『关于』触须 + 一层时间切片（去重、按时序排）。"""
+        t = self.t
+        changed = False
+        for e in sorted(events, key=lambda x: x.created_at):
+            if (e.id, p.id, "关于") in t._tendrils or (p.id, e.id, "关于") in t._tendrils:
+                continue
+            p.narratives.append(Slice(at=e.created_at, reading=e.skeleton[:80], feelings=[]))
+            t.link(e.id, p.id, "关于", weight=0.8)
+            changed = True
+        if changed:
+            p.narratives.sort(key=lambda s: s.at)
+            t.store.update_dynamics(p)
+
+    def _weave_llm_names(self, targets: list) -> dict[str, list[str]]:
+        prompt_lines = [
+            "下面是一些记忆。为每条挑出 1~3 个值得成为『记忆点』的概念",
+            "（2~8 个字：人、物、项目、反复出现的主题）。",
+            "每行输出：序号|概念1、概念2。挑不出就输出 序号| 。只输出这些行。",
+            "",
+        ]
+        for i, m in enumerate(targets, 1):
+            prompt_lines.append(f"{i}. {m.skeleton[:80]}")
+        out = self.llm("\n".join(prompt_lines))
+        result: dict[str, list[str]] = {}
+        if not out:
+            return result
+        for line in out.splitlines():
+            if "|" not in line:
+                continue
+            idx_s, _, names_s = line.partition("|")
+            try:
+                idx = int(idx_s.strip().rstrip(".")) - 1
+            except ValueError:
+                continue
+            if 0 <= idx < len(targets):
+                names = [n.strip() for n in names_s.replace("，", "、").split("、")]
+                result[targets[idx].id] = [n for n in names if 2 <= len(n) <= 8]
+        return result
+
+    @staticmethod
+    def _gram_concepts(text: str, df: dict[str, int], n_events: int) -> list[str]:
+        """离线概念提取：反复出现、不太泛、不是虚词的词，自己长成点。"""
+        cap = max(POINT_MIN_DF, int(n_events * POINT_MAX_DF_RATIO))
+        cands = []
+        for length in range(2, 7):
+            for i in range(len(text) - length + 1):
+                g = text[i : i + length]
+                if any(ch in POINT_STOP for ch in g) and length <= 3:
+                    continue
+                d = df.get(g, 0)
+                if POINT_MIN_DF <= d <= cap:
+                    cands.append((length * d, g))
+        cands.sort(key=lambda x: (-x[0], -len(x[1])))
+        chosen: list[str] = []
+        for _, g in cands:
+            if any(g in c or c in g for c in chosen):
+                continue
+            chosen.append(g)
+            if len(chosen) == 3:
+                break
+        return chosen
+
     # ---------------------------------------------------------- 巩固梦
 
     def _consolidate(self, replay: list, now: float, report: SleepReport) -> None:
@@ -125,6 +265,8 @@ class SleepCycle:
             for b in replay[i + 1 :]:
                 if a.evidence == "融合" or b.evidence == "融合":
                     continue
+                if a.kind == "概念" or b.kind == "概念":
+                    continue  # 记忆点不融合——点靠切片长大，不靠合并
                 if a.id in fused_tonight or b.id in fused_tonight:
                     continue
                 if t.pair_sim(a, b) < FUSE_SIM:
@@ -168,8 +310,8 @@ class SleepCycle:
         digested = t.store.digested_ids()
         night_load: dict[str, float] = {}
         for m in mems:
-            if m.id in digested:
-                continue
+            if m.id in digested or m.kind == "概念":
+                continue  # 记忆点不消化——点是消化的产物，不是原料
             # 够老、从未被真正召回过、不疼的记忆才被消化。
             # 疼的不消化（疼要一直疼到该好的时候）；被用过的不消化（那是活的记忆）。
             if m.pain > 0 or m.touch_count > 0:

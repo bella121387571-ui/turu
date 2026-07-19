@@ -33,12 +33,15 @@ def test_rehearse():
 
     def fake_llm(prompt: str) -> str:
         prompts.append(prompt)
+        if "记忆点" in prompt:
+            return "1|\n2|"  # 织网提示词：这批不提概念
         return "我：其实我当时想说……\n主人：想说什么就直说。\n体会：说出来也没那么可怕。"
 
     r = t.sleep(force=True, rng=random.Random(7), llm_provider=fake_llm)
     assert r.rehearsed == 1, f"该排练一段: {r.notes}"
-    assert "禁止生成新观点" in prompts[0], "性格化模拟的硬规则必须写进提示词"
-    assert "想说什么就直说" in prompts[0], "梦里的对方只能用真实语料"
+    rp = next(p for p in prompts if "排练" in p)
+    assert "禁止生成新观点" in rp, "性格化模拟的硬规则必须写进提示词"
+    assert "想说什么就直说" in rp, "梦里的对方只能用真实语料"
     assert t.private.count() > private0, "梦话原文只进私密区"
     assert t.temperament.state()["courage"] > courage0, "排练的产物是新胆量"
     assert not any("其实我当时想说" in m.skeleton for m in t._memories.values()), \
@@ -62,6 +65,8 @@ def _adjudicate_with(verdict_text: str):
     t.link(old.id, new.id, "矛盾", weight=0.5)
 
     def fake_llm(prompt: str) -> str:
+        if "记忆点" in prompt:
+            return ""  # 织网提示词：不提概念
         assert "矛盾" in prompt
         return verdict_text
 
