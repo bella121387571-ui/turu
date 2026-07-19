@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 
 class Store:
     def __init__(self, path: str):
-        self.conn = sqlite3.connect(path)
+        # timeout=30：每日自动导入可能和正在对话的它同时碰库，排队别报错
+        self.conn = sqlite3.connect(path, timeout=30)
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
