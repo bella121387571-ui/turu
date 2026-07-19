@@ -20,4 +20,7 @@ echo.
 echo ================ 导入检查 ====================
 %PY% tests\test_import.py
 echo.
+echo ================ 近况页检查 ==================
+%PY% tests\test_web.py
+echo.
 pause
