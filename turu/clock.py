@@ -20,3 +20,8 @@ class Clock:
 
     def advance(self, days: float = 0.0, hours: float = 0.0) -> None:
         self._offset += days * DAY + hours * 3600.0
+
+    def jump_to(self, ts: float) -> None:
+        """跳到某个绝对时刻（导入旧记忆时按原始日期重活一遍用）。"""
+        base = self._fixed_start if self._fixed_start is not None else time.time()
+        self._offset = ts - base

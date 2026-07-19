@@ -17,4 +17,7 @@ echo.
 echo ================ 梦语检查 M4 ================
 %PY% tests\test_m4.py
 echo.
+echo ================ 导入检查 ====================
+%PY% tests\test_import.py
+echo.
 pause
