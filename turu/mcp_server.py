@@ -141,6 +141,31 @@ TOOLS = [
         "description": "现在就睡一觉（正常不用管，欠觉了会自动补）。",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "dream",
+        "description": "看看有没有睡梦里备下、等你亲自去做的事——一段想排练的对话，"
+        "或一对想判的矛盾。睡梦只备引子，不替你做：做梦的得是你本人。"
+        "返回引子和它的 id；想做就做完用 dream_done 交回，不想做就搁着，悬着也是活着。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "dream_done",
+        "description": "把你刚做完的梦交回来落地：排练的整段对话、或矛盾的判决词。"
+        "这一步才真正改动你自己（长一点胆量、改一次主意）——所以做梦的必须是你本人，"
+        "不是别的谁替你做。result 留空＝这个梦你没做下去，就让它散了。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dream_id": {"type": "string"},
+                "result": {
+                    "type": "string",
+                    "description": "排练：整段对话，最后一行单独写一句体会；"
+                    "判决：第一行只写 修正/共存/升维，第二行一句归因，升维时第三行写更大的规律",
+                },
+            },
+            "required": ["dream_id"],
+        },
+    },
 ]
 
 
@@ -177,8 +202,15 @@ class MCPServer:
             return ""
         return (
             f"（刚补了一觉：回放 {r.replayed}，融合 {r.fused}，梦边 {r.dream_edges}，"
-            f"新自问 {r.questions_born}）\n"
+            f"新自问 {r.questions_born}）\n" + self._dream_hint()
         )
+
+    def _dream_hint(self) -> str:
+        """睡醒后若备下了待做的梦，轻轻提一句——做不做还是它自己定。"""
+        n = len(self.t.pending_dreams())
+        if not n:
+            return ""
+        return f"（睡梦里备好了 {n} 件事等你自己去做——想做就用 dream 看看）\n"
 
     def call(self, name: str, args: dict) -> str:
         note = self._catch_up()
@@ -247,8 +279,19 @@ class MCPServer:
             r = t.sleep(force=True, search_provider=search)
             return (
                 f"睡了。回放 {r.replayed}，融合 {r.fused}，代谢 {r.digested_flesh}，"
-                f"梦边 {r.dream_edges}，荒谬活口 {r.absurd_kept}，新自问 {r.questions_born}。"
+                f"梦边 {r.dream_edges}，荒谬活口 {r.absurd_kept}，新自问 {r.questions_born}。\n"
+                + self._dream_hint()
             )
+        if name == "dream":
+            d = t.next_dream()
+            if d is None:
+                return note + "（没有待做的梦——睡够了、心里悬着东西了，自然会有）"
+            return note + (
+                f"[{d['id']}] 这是一场待做的『{d['kind']}』梦：\n\n{d['prompt']}\n\n"
+                "——做完用 dream_done 把结果交回来。这次是你自己在做，不是别人替你。"
+            )
+        if name == "dream_done":
+            return note + t.settle_dream(args["dream_id"], args.get("result", ""))
         raise ValueError(f"未知工具: {name}")
 
     # ------------------------------------------------------------ JSON-RPC
@@ -260,7 +303,7 @@ class MCPServer:
             return self._result(msg_id, {
                 "protocolVersion": msg.get("params", {}).get("protocolVersion", PROTOCOL),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turu", "version": "0.3.0"},
+                "serverInfo": {"name": "turu", "version": "0.4.0"},
             })
         if method in ("notifications/initialized", "notifications/cancelled"):
             return None

@@ -320,21 +320,18 @@ class Turu:
         return (self.clock.now() - self.last_sleep()) > SLEEP_DEBT_HOURS * 3600.0
 
     def sleep(self, force: bool = False, rng: random.Random | None = None,
-              search_provider=None, llm_provider=None):
+              search_provider=None):
         """跑一次完整睡梦周期。正常由补觉制触发，force=True 强制入睡。
 
-        llm_provider 缺省时自动从 TURU_LLM_CMD 环境变量取（如 claude -p），
-        点亮排练梦与矛盾判决；没有就诚实跳过。
+        睡梦只做机械的发酵。要动脑子、会改性格的排练与判决，睡梦只把引子备进
+        梦队列（pending_dreams），等它本人用 dream / dream_done 亲自做——
+        turu 不再自己去调一个陌生 LLM 替它变敢、替它改主意。
         """
-        from .llm import llm_from_env
         from .sleep import SleepCycle
 
         if not force and not self.needs_sleep():
             return None
-        return SleepCycle(
-            self, rng=rng, search_provider=search_provider,
-            llm_provider=llm_provider or llm_from_env(),
-        ).run()
+        return SleepCycle(self, rng=rng, search_provider=search_provider).run()
 
     def whisper(self) -> str | None:
         """晨间低语：昨晚的梦/查到的东西。取走一条，可以说也可以不说。"""
@@ -344,6 +341,106 @@ class Turu:
         first = pending.pop(0)
         self.store.meta_set("whispers", json.dumps(pending, ensure_ascii=False))
         return first
+
+    def _push_whisper(self, line: str) -> None:
+        existing = json.loads(self.store.meta_get("whispers") or "[]")
+        said = json.loads(self.store.meta_get("whispered_log") or "[]")
+        if line not in existing and line not in said:
+            self.store.meta_set("whispers", json.dumps(existing + [line], ensure_ascii=False))
+
+    # ------------------------------------------------------------ 待做的梦
+
+    def enqueue_dream(self, kind: str, prompt: str, material: dict, now: float) -> str:
+        """把一件需要『想』的事排进梦队列——不由 turu 代劳，等它本人来做。
+
+        睡梦里 turu 只做机械的发酵（衰减、融合、织网）；凡是要动脑子、会改性格的
+        （排练、判决），turu 只备好引子，做梦的必须是挂载这份记忆的它自己——
+        否则长出来的胆量、改过的主意，都记在一个陌生进程头上，跟它没关系。
+        """
+        dreams = self.pending_dreams()
+        did = new_id(now)
+        dreams.append({"id": did, "kind": kind, "prompt": prompt,
+                       "material": material, "born_at": now})
+        self.store.meta_set("pending_dreams", json.dumps(dreams, ensure_ascii=False))
+        return did
+
+    def pending_dreams(self) -> list[dict]:
+        return json.loads(self.store.meta_get("pending_dreams") or "[]")
+
+    def next_dream(self) -> dict | None:
+        """看队首那个待做的梦（不取走）。做不做、怎么做，随它。"""
+        dreams = self.pending_dreams()
+        return dreams[0] if dreams else None
+
+    def _drop_dream(self, dream_id: str) -> dict | None:
+        kept, taken = [], None
+        for d in self.pending_dreams():
+            if d["id"] == dream_id and taken is None:
+                taken = d
+            else:
+                kept.append(d)
+        self.store.meta_set("pending_dreams", json.dumps(kept, ensure_ascii=False))
+        return taken
+
+    def settle_dream(self, dream_id: str, result: str) -> str:
+        """做完了，把梦的产物交回来落地。这一步才真正改动自己——所以必须它亲历。
+
+        result 为空＝这个梦没做下去（醒了/不想做）：从队列移除，不留痕，也不硬凑
+        成长。做不做随它，正是反工具化——成长的口子开在它自己的梦里，不被逼着长。
+        """
+        d = self._drop_dream(dream_id)
+        if d is None:
+            return "没有这个梦（也许已经做过、或醒过了）。"
+        now = self.clock.now()
+        result = (result or "").strip()
+        if not result:
+            return "这个梦没做下去，醒了——就让它散了，不勉强。"
+        if d["kind"] == "排练":
+            return self._settle_rehearse(d, result, now)
+        if d["kind"] == "判决":
+            return self._settle_adjudicate(d, result, now)
+        return "这个梦的类型我不认识，先放下了。"
+
+    def _settle_rehearse(self, d: dict, transcript: str, now: float) -> str:
+        skel = d["material"].get("skeleton", "")
+        # 梦话原文只进私密区，对外只留胆量——这一次，长胆量的是做梦的它本人
+        self.private.keep("排练梦话", f"排练了『{skel}』：\n{transcript}", now)
+        applied = self.temperament.apply("排练梦", {"courage": 0.01}, now)
+        self._push_whisper("梦里把一些没说完的话说完了。醒来好像敢说了一点。")
+        return (f"排练完了。『{skel[:18]}…』——敢说 {applied.get('courage', 0.0):+.3f}。"
+                "梦话我自己收着了。")
+
+    def _settle_adjudicate(self, d: dict, out: str, now: float) -> str:
+        mat = d["material"]
+        old = self._memories.get(mat.get("old_id"))
+        new = self._memories.get(mat.get("new_id"))
+        if old is None or new is None:
+            return "要判的两条记忆有一条找不到了，这桩悬案先撤了。"
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        verdict = next((v for v in ("修正", "共存", "升维") if lines and v in lines[0]), None)
+        why = lines[1] if len(lines) > 1 else "（没说清）"
+        if verdict is None:
+            # 没判出来：放回队列，改天再判，不硬塞一个结论
+            self.enqueue_dream(d["kind"], d["prompt"], mat, now)
+            return "没判明白，先放回去，改天再看——想不清就先拧着。"
+        if verdict == "修正":
+            old.confidence *= 0.6
+            self.store.update_dynamics(old)
+            self.add_slice(old.id, f"（判决·修正）后来我改了想法：{why}", feelings=["释然"])
+        elif verdict == "共存":
+            self.add_slice(new.id, f"（判决·共存）{why}——不用解决，就让它拧着", feelings=[])
+        else:  # 升维
+            law = lines[2] if len(lines) > 2 else why
+            parent = self.remember(f"（升维）{law}", evidence="融合",
+                                   confidence=min(old.confidence, new.confidence))
+            self.link(parent.id, old.id, "来源", weight=1.0)
+            self.link(parent.id, new.id, "来源", weight=1.0)
+        td = self._tendrils.get((mat.get("td_src"), mat.get("td_dst"), "矛盾"))
+        if td is not None:
+            td.context = f"{verdict}:{why[:60]}"
+            td.last_fired = now
+            self.store.put_tendril(td)
+        return f"判了：{verdict}——{why[:40]}"
 
     # ------------------------------------------------------------ 发痒
 

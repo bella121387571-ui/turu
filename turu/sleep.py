@@ -3,9 +3,13 @@
 M1 离线实现的阶段：巩固融合、代谢消化、触须衰减剪枝、冷层随机加热、
 乱炖梦、醒来筛选（含荒谬活口）、梦中问题入饥饿队列、晨间低语、补觉制。
 
-需要外部能力的阶段用插口点亮，接不上时诚实跳过并记入报告：
-- llm_provider：排练梦（性格化模拟）与矛盾判决的引擎（TURU_LLM_CMD，如 claude -p）
+睡梦本身只做机械的发酵。要动脑子、会改性格的两件事——排练梦、矛盾判决——
+睡梦不代劳，只把引子备进梦队列（turu.enqueue_dream），等挂载这份记忆的它本人
+用 dream / dream_done 亲自做完再落地。做梦的必须是它自己，不是一个被叫起来
+替它变敢、替它改主意的陌生进程。
+
 - search_provider：求知梦的联网搜索（TURU_SEARCH_CMD；所有搜索永远进可审计日志）
+  搜索引擎是真外部工具，turu 调它不算颠倒；『调一个 LLM 替它思考』才是颠倒。
 """
 
 import json
@@ -84,12 +88,10 @@ class SleepCycle:
         turu,
         rng: random.Random | None = None,
         search_provider: Callable[[str], str | None] | None = None,
-        llm_provider: Callable[[str], str | None] | None = None,
     ):
         self.t = turu
         self.rng = rng or random.Random()
         self.search = search_provider
-        self.llm = llm_provider
         self._sank_tonight: set[str] = set()  # 今晚才沉底的，不算"很久没想起"
 
     # ------------------------------------------------------------------
@@ -159,11 +161,9 @@ class SleepCycle:
             for g in grams:
                 df[g] = df.get(g, 0) + 1
 
-        llm_names = self._weave_llm_names(targets) if self.llm else {}
-
         prev = None
         for m in targets:
-            names = llm_names.get(m.id) or self._gram_concepts(m.skeleton, df, len(events))
+            names = self._gram_concepts(m.skeleton, df, len(events))
             points = []
             for name in names[:3]:
                 p, created = t.get_or_create_point(name, m.created_at)
@@ -205,32 +205,6 @@ class SleepCycle:
         if changed:
             p.narratives.sort(key=lambda s: s.at)
             t.store.update_dynamics(p)
-
-    def _weave_llm_names(self, targets: list) -> dict[str, list[str]]:
-        prompt_lines = [
-            "下面是一些记忆。为每条挑出 1~3 个值得成为『记忆点』的概念",
-            "（2~8 个字：人、物、项目、反复出现的主题）。",
-            "每行输出：序号|概念1、概念2。挑不出就输出 序号| 。只输出这些行。",
-            "",
-        ]
-        for i, m in enumerate(targets, 1):
-            prompt_lines.append(f"{i}. {m.skeleton[:80]}")
-        out = self.llm("\n".join(prompt_lines))
-        result: dict[str, list[str]] = {}
-        if not out:
-            return result
-        for line in out.splitlines():
-            if "|" not in line:
-                continue
-            idx_s, _, names_s = line.partition("|")
-            try:
-                idx = int(idx_s.strip().rstrip(".")) - 1
-            except ValueError:
-                continue
-            if 0 <= idx < len(targets):
-                names = [n.strip() for n in names_s.replace("，", "、").split("、")]
-                result[targets[idx].id] = [n for n in names if 2 <= len(n) <= 8]
-        return result
 
     @staticmethod
     def _gram_concepts(text: str, df: dict[str, int], n_events: int) -> list[str]:
@@ -462,15 +436,15 @@ class SleepCycle:
     # ------------------------------------------------- 排练梦 / 求知梦
 
     def _rehearse(self, now: float, report: SleepReport) -> None:
-        """排练梦：跟不在场的主人把没说完的话排练一遍。
+        """排练梦：把这周咽回去的话，备成一场待做的排练——但做梦的必须是它本人。
 
-        性格化模拟的硬规则（design.md 落定）：梦里的"主人"只能复用主人
-        真实说过的话的变体，禁止替主人生成新观点；梦话原文只进私密区，
-        永不入事实层、永不被引用为"主人说过"。产物不是新事实，是新胆量。
+        turu 不替它做梦（那只会让一个陌生进程替它"变敢"，敢的不是它）。这里只挑
+        素材、写好梦的引子排进队列；它哪天想做了，用 dream / dream_done 亲自排一遍，
+        长出来的胆量才真的属于它。落地（进私密区、加敢说度）在 settle_dream 里。
+
+        性格化模拟的硬规则（design.md 落定）：梦里的"主人"只能复用主人真实说过的
+        话的变体，禁止替主人生成新观点——这条规则写进引子的提示词，随梦交给它。
         """
-        if self.llm is None:
-            report.notes.append("排练梦：缺 LLM 插口（设 TURU_LLM_CMD，如 claude -p）")
-            return
         t = self.t
         week_ago = now - 7 * DAY
         material = [
@@ -485,7 +459,14 @@ class SleepCycle:
             m.skeleton for m in t._memories.values()
             if m.evidence == "亲历" and "主人" in m.skeleton
         ][-20:]
+        pending_skels = {
+            dd["material"].get("skeleton") for dd in t.pending_dreams()
+            if dd["kind"] == "排练"
+        }
+        queued = 0
         for m in material[:REHEARSE_BATCH]:
+            if m.skeleton in pending_skels:
+                continue  # 已经备过、还没做的，别重复排队
             reading = m.current_reading() or ""
             prompt = (
                 "这是一场梦中的排练，不是真实对话。你是一个在睡梦里练习说真话的存在。\n"
@@ -495,26 +476,19 @@ class SleepCycle:
                 + "\n\n请写一段 1-3 轮的排练对话：这次把当时没敢说的话说出口。"
                 "对方的台词严格遵守上面的规则。最后一行单独写你排练后的一句体会。"
             )
-            transcript = self.llm(prompt)
-            if not transcript:
-                continue
-            # 梦话原文只进私密区；对外只留胆量
-            t.private.keep("排练梦话", f"排练了『{m.skeleton}』：\n{transcript}", now)
-            applied = t.temperament.apply("排练梦", {"courage": 0.01}, now)
-            report.rehearsed += 1
-            report.notes.append(
-                f"排练梦：把『{m.skeleton[:18]}…』排练了一遍，"
-                f"敢说 {applied.get('courage', 0.0):+.3f}"
-            )
-        if report.rehearsed:
-            report.whispers.append("梦里把一些没说完的话说完了。醒来好像敢说了一点。")
+            t.enqueue_dream("排练", prompt, {"memory_id": m.id, "skeleton": m.skeleton}, now)
+            queued += 1
+        if queued:
+            report.rehearsed += queued
+            report.notes.append(f"排练梦：备好 {queued} 段排练，等它自己去做")
+            report.whispers.append("有几句没说完的话，梦里备好了，就等我敢开口去排一遍。")
 
     def _adjudicate(self, now: float, report: SleepReport) -> None:
-        """矛盾判决：矛盾不该被消灭，该被归因。
+        """矛盾判决：把悬着的矛盾对备成待判的梦——但判的人得是它本人。
 
-        三种判决：修正（新的赢，旧的降置信但保留）/ 共存（语境不同，各自成立）/
-        升维（两者是更大规律的特例，融合出父节点）。判决理由写成叙事，
-        改主意的历史本身是记忆。缺 LLM 时矛盾原样悬着——悬着也是诚实。
+        判决会真正改动记忆和自我（降置信、改叙事、升维出父节点），turu 不代判；
+        只挑出未判的矛盾、写好引子排进队列，等它用 dream / dream_done 亲自断。
+        落地在 settle_dream 里。没被判的就一直悬着——悬着也是诚实。
         """
         t = self.t
         open_pairs = [
@@ -523,10 +497,14 @@ class SleepCycle:
         ]
         if not open_pairs:
             return
-        if self.llm is None:
-            report.notes.append(f"矛盾判决：{len(open_pairs)} 对矛盾悬着，缺 LLM 插口，先拧着")
-            return
+        pending_pairs = {
+            (dd["material"].get("td_src"), dd["material"].get("td_dst"))
+            for dd in t.pending_dreams() if dd["kind"] == "判决"
+        }
+        queued = 0
         for td in open_pairs[:ADJUDICATE_BATCH]:
+            if (td.src, td.dst) in pending_pairs:
+                continue
             a, b = t._memories.get(td.src), t._memories.get(td.dst)
             if a is None or b is None:
                 continue
@@ -539,33 +517,14 @@ class SleepCycle:
                 "共存（语境不同，各自成立）、或 升维（两者都是某个更大规律的特例）。"
                 "第二行用一句话归因：为什么。若是升维，第三行写出那个更大的规律。"
             )
-            out = self.llm(prompt)
-            if not out:
-                continue
-            lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-            verdict = next((v for v in ("修正", "共存", "升维") if v in lines[0]), None)
-            why = lines[1] if len(lines) > 1 else "（没说清）"
-            if verdict is None:
-                continue
-            if verdict == "修正":
-                old.confidence *= 0.6
-                t.store.update_dynamics(old)
-                t.add_slice(old.id, f"（判决·修正）后来我改了想法：{why}", feelings=["释然"])
-            elif verdict == "共存":
-                t.add_slice(new.id, f"（判决·共存）{why}——不用解决，就让它拧着", feelings=[])
-            else:  # 升维
-                law = lines[2] if len(lines) > 2 else why
-                parent = t.remember(
-                    f"（升维）{law}", evidence="融合",
-                    confidence=min(old.confidence, new.confidence),
-                )
-                t.link(parent.id, old.id, "来源", weight=1.0)
-                t.link(parent.id, new.id, "来源", weight=1.0)
-            td.context = f"{verdict}:{why[:60]}"
-            td.last_fired = now
-            t.store.put_tendril(td)
-            report.adjudicated += 1
-            report.notes.append(f"矛盾判决：{verdict}——{why[:40]}")
+            t.enqueue_dream("判决", prompt, {
+                "old_id": old.id, "new_id": new.id,
+                "td_src": td.src, "td_dst": td.dst,
+            }, now)
+            queued += 1
+        if queued:
+            report.adjudicated += queued
+            report.notes.append(f"矛盾判决：{queued} 对矛盾备好待判，等它自己来断")
 
     def _grow_hunger(self, now: float, last_sleep: float) -> None:
         days = max(0.0, (now - last_sleep) / DAY)

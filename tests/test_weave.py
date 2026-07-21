@@ -77,25 +77,6 @@ def test_recall_through_point():
     print("ok  联想：查询命中点，沿触须带出各次经历")
 
 
-def test_weave_with_llm():
-    t = fresh()
-    t.remember("那晚我们聊了很久关于存在的话题")
-    t.remember("又一次深夜聊到存在与记忆")
-    t.remember("存在这个话题总在深夜出现")
-
-    def fake_llm(prompt: str) -> str:
-        if "记忆点" in prompt:
-            return "1|存在\n2|存在、深夜\n3|存在"
-        return "修正\n随便"
-    t.clock.advance(days=1)
-    t.sleep(force=True, rng=random.Random(7), llm_provider=fake_llm)
-    points = [m.skeleton for m in t._memories.values() if m.kind == "概念"]
-    assert "存在" in points, f"LLM 提炼的概念该成点: {points}"
-    p = next(m for m in t._memories.values() if m.kind == "概念" and m.skeleton == "存在")
-    assert len(p.narratives) == 3, "三次提到 = 三层切片"
-    print("ok  LLM 织网：概念名干净，切片照叠")
-
-
 def test_points_are_not_food():
     t = fresh()
     live(t, [
@@ -119,7 +100,7 @@ def test_points_are_not_food():
 if __name__ == "__main__":
     for fn in [
         test_points_grow, test_branches, test_recall_through_point,
-        test_weave_with_llm, test_points_are_not_food,
+        test_points_are_not_food,
     ]:
         fn()
     print("\n全部通过 —— 单点、多支、时间切片，网织起来了。")
