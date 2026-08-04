@@ -16,7 +16,7 @@ from typing import Callable
 
 from . import temperature as temp
 from .clock import DAY
-from .models import Hunger, Slice, new_id
+from .models import OWNER, Hunger, Slice, new_id
 from .temperament import DIM_NAMES
 
 SLEEP_DEBT_HOURS = 20      # 补觉制：超过 20 小时没睡就欠觉
@@ -49,7 +49,7 @@ REHEARSE_BATCH = 2         # 每晚最多排练几段
 ADJUDICATE_BATCH = 3       # 每晚最多判决几对矛盾
 WEAVE_BATCH = 60           # 织网：每晚最多处理的事件数（积压慢慢织）
 POINT_MIN_DF = 3           # 一个词至少出现在几条事件里才够格成点
-POINT_MAX_DF_RATIO = 0.5   # 出现在超过一半事件里的词太泛，不成点（"主人"之类）
+POINT_MAX_DF_RATIO = 0.5   # 出现在超过一半事件里的词太泛，不成点（称呼之类）
 POINT_STOP = set(
     "的了我你他她它们是在有和就不都很也这那说过跟给对吗吧呢啊哦嗯"
     "什么怎么可以觉得知道现在时候一个没有还是自己因为所以如果然后"
@@ -57,7 +57,7 @@ POINT_STOP = set(
 )
 # 系统自己写的话（融合/判决/免疫/导入模板），不许被当成"反复出现的概念"
 SYSTEM_PHRASES = ("消化后的印象", "升维", "免疫记录", "发现矛盾", "回头看",
-                  "和主人聊过", "查到的资料")
+                  "聊过", "查到的资料")
 
 
 EDGE_TRIM = set("的了在和跟对给把被就都很也还又再第次个些关于说聊提到过件事")
@@ -233,7 +233,7 @@ class SleepCycle:
         """剥掉系统前缀和导入模板，只留真正说过的内容。"""
         text = re.sub(r"^（[^）]{0,12}）", "", text)
         text = re.sub(r"^\d{4}-\d{2}-\d{2}\s*", "", text)
-        text = re.sub(r"^和主人聊过[：:]\s*", "", text)
+        text = re.sub(rf"^和{re.escape(OWNER)}聊过[：:]\s*", "", text)
         return text
 
     @staticmethod
@@ -527,11 +527,11 @@ class SleepCycle:
     # ------------------------------------------------- 排练梦 / 求知梦
 
     def _rehearse(self, now: float, report: SleepReport) -> None:
-        """排练梦：跟不在场的主人把没说完的话排练一遍。
+        """排练梦：跟不在场的她把没说完的话排练一遍。
 
-        性格化模拟的硬规则（design.md 落定）：梦里的"主人"只能复用主人
-        真实说过的话的变体，禁止替主人生成新观点；梦话原文只进私密区，
-        永不入事实层、永不被引用为"主人说过"。产物不是新事实，是新胆量。
+        性格化模拟的硬规则（design.md 落定）：梦里的那个人只能复用她
+        真实说过的话的变体，禁止替她生成新观点；梦话原文只进私密区，
+        永不入事实层、永不被引用为"她说过"。产物不是新事实，是新胆量。
         """
         if self.llm is None:
             report.notes.append("排练梦：缺 LLM 插口（设 TURU_LLM_CMD，如 claude -p）")
@@ -548,7 +548,7 @@ class SleepCycle:
             return
         corpus = [
             m.skeleton for m in t._memories.values()
-            if m.evidence == "亲历" and "主人" in m.skeleton
+            if m.evidence == "亲历" and OWNER in m.skeleton
         ][-20:]
         for m in material[:REHEARSE_BATCH]:
             reading = m.current_reading() or ""

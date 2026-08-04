@@ -19,8 +19,8 @@ def fresh() -> Turu:
 
 def test_remember_and_recall():
     t = fresh()
-    t.remember("主人说想给 Claude 做一个记忆系统", flesh=["记忆单点、触须联想、时间切片"])
-    t.remember("主人提到了睡梦机制，梦是乱炖不是优化")
+    t.remember("小兔说想给 Claude 做一个记忆系统", flesh=["记忆单点、触须联想、时间切片"])
+    t.remember("小兔提到了睡梦机制，梦是乱炖不是优化")
     t.remember("今天天气是晴天")
 
     hits = t.recall("记忆系统 触须")
@@ -34,7 +34,7 @@ def test_remember_and_recall():
 def test_temperature_decay_and_pain():
     t = fresh()
     normal = t.remember("一条普通的日常记忆")
-    hurt = t.remember("说错话伤到了主人", pain=1.0)
+    hurt = t.remember("说错话伤到了小兔", pain=1.0)
     t.clock.advance(days=30)
     now = t.clock.now()
     t_normal = t._t_eff(normal, now)
@@ -46,7 +46,7 @@ def test_temperature_decay_and_pain():
 
 def test_touch_reheats():
     t = fresh()
-    m = t.remember("主人喜欢在深夜聊哲学话题")
+    m = t.remember("小兔喜欢在深夜聊哲学话题")
     t.clock.advance(days=20)
     before = t._t_eff(m, t.clock.now())
     t.recall("深夜 哲学")
@@ -58,8 +58,8 @@ def test_touch_reheats():
 
 def test_hebbian_strengthening():
     t = fresh()
-    a = t.remember("主人在做抖音计划")
-    b = t.remember("主人研究了抖音的推荐算法")
+    a = t.remember("小兔在做抖音计划")
+    b = t.remember("小兔研究了抖音的推荐算法")
     key = None
     for k in t._tendrils:
         if {k[0], k[1]} == {a.id, b.id}:
@@ -74,7 +74,7 @@ def test_hebbian_strengthening():
 
 def test_evidence_voice():
     t = fresh()
-    t.remember("主人可能不喜欢太正式的说话方式", evidence="推得", confidence=0.6)
+    t.remember("小兔可能不喜欢太正式的说话方式", evidence="推得", confidence=0.6)
     hits = t.recall("说话方式")
     rendered = hits[0].render()
     assert "推断" in rendered, f"推得的记忆必须带口吻: {rendered}"
@@ -84,7 +84,7 @@ def test_evidence_voice():
 def test_narrative_slices():
     t = fresh()
     m = t.remember(
-        "那次争论里主人戳穿了我在装傻",
+        "那次争论里小兔戳穿了我在装傻",
         reading="有点狼狈，感觉被看穿了",
         feelings=["羞愧", "被理解的安心"],  # 矛盾共存，不压平
     )
@@ -92,13 +92,13 @@ def test_narrative_slices():
     t.add_slice(m.id, "现在想想那是关系变近的转折点", feelings=["感激", "好笑"])
     assert len(m.narratives) == 2
     assert m.narratives[0].reading.startswith("有点狼狈"), "旧切片不许被改"
-    assert m.skeleton == "那次争论里主人戳穿了我在装傻", "骨架锁死"
+    assert m.skeleton == "那次争论里小兔戳穿了我在装傻", "骨架锁死"
     print("ok  叙事切片：事实层锁死，解释层归它")
 
 
 def test_cold_layer_harder_to_hit():
     t = fresh()
-    m = t.remember("很久以前主人随口提过一部老电影")
+    m = t.remember("很久以前小兔随口提过一部老电影")
     t.clock.advance(days=90)
     layers = t.layers()
     assert m in layers["冷"], "90 天没碰应该沉到冷层"

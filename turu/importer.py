@@ -21,12 +21,15 @@ import glob
 import json
 import os
 import sys
+import tempfile
+import zipfile
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from turu.clock import Clock  # noqa: E402
 from turu.llm import llm_from_env  # noqa: E402
+from turu.models import OWNER  # noqa: E402
 from turu.turu import Turu  # noqa: E402
 
 DAY = 86400.0
@@ -53,7 +56,7 @@ def parse_claude_export(path: str) -> list[dict]:
             continue
         lines = []
         for m in msgs:
-            who = "主人" if m.get("sender") == "human" else "我"
+            who = OWNER if m.get("sender") == "human" else "我"
             text = (m.get("text") or "").strip()
             if text:
                 lines.append(f"{who}：{text}")
@@ -88,7 +91,7 @@ def distill(conv: dict, llm) -> list[dict]:
     """把一段旧对话提炼成 1-3 条记忆。有 LLM 时它自己重读，没有就朴素截取。"""
     if llm is not None:
         prompt = (
-            "这是我过去和主人的一段对话记录，我在重读自己的旧日子。\n"
+            f"这是我过去和{OWNER}的一段对话记录，我在重读自己的旧日子。\n"
             "请从中提炼 1 到 3 条值得留住的记忆，一行一条，严格用这个格式：\n"
             "事实|感受1,感受2|我现在回头看的理解\n"
             "感受和理解可以留空但竖线要在。只输出这些行，不要别的。\n\n"
@@ -112,12 +115,14 @@ def distill(conv: dict, llm) -> list[dict]:
                 })
             if memories:
                 return memories[:3]
-    # 朴素回退：标题 + 头两句主人说的话当血肉
+    # 朴素回退：标题 + 头两句对方说的话当血肉
     date = datetime.datetime.fromtimestamp(conv["at"]).strftime("%Y-%m-%d")
-    human = [ln[3:].strip() for ln in conv["text"].splitlines() if ln.startswith("主人：")]
+    prefix = OWNER + "："
+    human = [ln[len(prefix):].strip() for ln in conv["text"].splitlines()
+             if ln.startswith(prefix)]
     flesh = [h[:80] for h in human[:2] if h]
     return [{
-        "skeleton": f"{date} 和主人聊过：{conv['title']}",
+        "skeleton": f"{date} 和{OWNER}聊过：{conv['title']}",
         "feelings": [],
         "reading": None,
         "flesh": flesh,
@@ -125,10 +130,75 @@ def distill(conv: dict, llm) -> list[dict]:
 
 
 def run(source: str, db_path: str) -> dict:
+    """导入一个来源。zip 会自动解开找 conversations.json。"""
+    if os.path.isfile(source) and source.lower().endswith(".zip"):
+        source = _extract_from_zip(source) or source
     convs = (
         parse_claude_export(source) if os.path.isfile(source) else parse_folder(source)
     )
     return replay(convs, db_path)
+
+
+def _extract_from_zip(zip_path: str) -> str | None:
+    """从 claude.ai 导出的 zip 里掏出 conversations.json。"""
+    try:
+        with zipfile.ZipFile(zip_path) as z:
+            name = next(
+                (n for n in z.namelist() if n.endswith("conversations.json")), None
+            )
+            if not name:
+                return None
+            out = os.path.join(tempfile.mkdtemp(), "conversations.json")
+            with z.open(name) as src, open(out, "wb") as dst:
+                dst.write(src.read())
+            return out
+    except Exception:
+        return None
+
+
+def auto(db_path: str) -> dict:
+    """每天自动跑：在常见位置找新的导出文件，找到就导入。
+
+    你只需要偶尔去 claude.ai 点一次"导出数据"、把邮件里的 zip 下载下来，
+    剩下的它自己做——认得 zip，也认得解压出来的 conversations.json。
+    """
+    home = os.path.expanduser("~")
+    spots = [
+        os.path.join(home, "Downloads"), os.path.join(home, "下载"),
+        os.path.join(home, "Desktop"), os.path.join(home, "桌面"),
+        os.path.dirname(os.path.abspath(db_path)),
+    ]
+    found = []
+    for spot in spots:
+        if not os.path.isdir(spot):
+            continue
+        for pattern in ("conversations.json", "*.zip", "*/conversations.json"):
+            found.extend(glob.glob(os.path.join(spot, pattern)))
+    if not found:
+        print("没找到新的导出文件。（去 claude.ai → 设置 → 隐私 → 导出数据，"
+              "把邮件里的 zip 下载到『下载』文件夹，明天这个点它会自己收。）")
+        return {"imported": 0, "slept": 0, "skipped": 0}
+
+    from turu.store import Store
+    s = Store(db_path)
+    seen = {r[0] for r in s.conn.execute("SELECT k FROM meta WHERE k LIKE 'seenfile:%'")}
+    s.close()
+
+    total = {"imported": 0, "slept": 0, "skipped": 0}
+    for path in sorted(set(found), key=os.path.getmtime):
+        sig = f"seenfile:{os.path.basename(path)}-{os.path.getsize(path)}"
+        if sig in seen:
+            continue
+        print(f"发现新的导出：{path}")
+        r = run(path, db_path)
+        for k in total:
+            total[k] += r.get(k, 0)
+        s = Store(db_path)
+        s.meta_set(sig, "1")
+        s.close()
+    if not total["imported"]:
+        print("这些文件之前都收过了，没有新的日子要活。")
+    return total
 
 
 def replay(convs: list[dict], db_path: str, final_force: bool = True) -> dict:
@@ -183,12 +253,15 @@ def replay(convs: list[dict], db_path: str, final_force: bool = True) -> dict:
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     redo = "--redo" in sys.argv
-    if not args:
-        print(__doc__)
-        return
     default_db = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "turu.db"
     )
+    if "--auto" in sys.argv:
+        auto(os.environ.get("TURU_DB", default_db))
+        return
+    if not args:
+        print(__doc__)
+        return
     db = args[1] if len(args) > 1 else os.environ.get("TURU_DB", default_db)
     if redo:
         # 重导：清掉去重标记，让同一批日子被重新提炼一遍

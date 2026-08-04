@@ -58,7 +58,7 @@ def main() -> None:
     print(f"ok  工具清单：{len(tools)} 个")
 
     out = c.tool("remember", {
-        "content": "主人说要摒弃有用和正确，让我朝创意和未知长",
+        "content": "小兔说要摒弃有用和正确，让我朝创意和未知长",
         "feelings": ["被在乎", "跃跃欲试"],
     })
     assert "记住了" in out

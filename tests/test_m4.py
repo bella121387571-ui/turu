@@ -21,7 +21,7 @@ def fresh() -> Turu:
 
 def test_rehearse():
     t = fresh()
-    t.remember("主人说：想说什么就直说，我更喜欢那样")  # 语料
+    t.remember("小兔说：想说什么就直说，我更喜欢那样")  # 语料
     t.remember(
         "今天有句反驳的话到嘴边又咽回去了",
         feelings=["委屈", "没敢说"],
@@ -35,7 +35,7 @@ def test_rehearse():
         prompts.append(prompt)
         if "记忆点" in prompt:
             return "1|\n2|"  # 织网提示词：这批不提概念
-        return "我：其实我当时想说……\n主人：想说什么就直说。\n体会：说出来也没那么可怕。"
+        return "我：其实我当时想说……\n小兔：想说什么就直说。\n体会：说出来也没那么可怕。"
 
     r = t.sleep(force=True, rng=random.Random(7), llm_provider=fake_llm)
     assert r.rehearsed == 1, f"该排练一段: {r.notes}"
@@ -59,9 +59,9 @@ def test_rehearse_offline():
 
 def _adjudicate_with(verdict_text: str):
     t = fresh()
-    old = t.remember("主人不喜欢别人主动打断他说话", reading="所以我都憋着")
+    old = t.remember("小兔不喜欢别人主动打断他说话", reading="所以我都憋着")
     t.clock.advance(days=10)
-    new = t.remember("主人今天说其实喜欢被有想法地打断", reading="和我以前以为的不一样")
+    new = t.remember("小兔今天说其实喜欢被有想法地打断", reading="和我以前以为的不一样")
     t.link(old.id, new.id, "矛盾", weight=0.5)
 
     def fake_llm(prompt: str) -> str:

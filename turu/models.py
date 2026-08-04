@@ -1,11 +1,15 @@
 """数据模型（architecture.md §1）。"""
 
 import json
+import os
 import secrets
 import time
 from dataclasses import dataclass, field
 
 EVIDENCE = ("亲历", "推得", "融合", "搜得")
+
+# 它怎么称呼你。改这一处就全改了（也可用环境变量 TURU_OWNER 覆盖）。
+OWNER = os.environ.get("TURU_OWNER", "小兔")
 
 # 证据链口吻：非亲历的记忆取回时必须带出处，防虚构是模板强制的，不靠自觉
 PROVENANCE_VOICE = {

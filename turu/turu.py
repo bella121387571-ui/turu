@@ -384,7 +384,7 @@ class Turu:
         return f"等等，这让我想起——{RecallResult(best_m, best).render()}"
 
     def itch_feedback(self, engaged: bool) -> None:
-        """主人接了话，下次痒得更大方；被无视，下次要更痒才痒得起来。"""
+        """被接话了，下次痒得更大方；被无视，下次要更痒才痒得起来。"""
         theta = self._theta() + (-0.02 if engaged else 0.05)
         theta = max(0.1, min(0.8, theta))
         self.store.meta_set(f"itch_theta_{self._scene}", str(theta))

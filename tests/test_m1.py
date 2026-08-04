@@ -32,8 +32,8 @@ def test_sleep_debt():
 
 def test_fusion():
     t = fresh()
-    a = t.remember("主人今天又聊到了抖音计划的推荐算法", feelings=["兴奋"])
-    b = t.remember("主人今天聊到了抖音计划的推荐算法", feelings=["有点担心"])
+    a = t.remember("小兔今天又聊到了抖音计划的推荐算法", feelings=["兴奋"])
+    b = t.remember("小兔今天聊到了抖音计划的推荐算法", feelings=["有点担心"])
     report = t.sleep(force=True, rng=random.Random(7))
     assert report.fused == 1, f"近似记忆该被融合: {report}"
     fusions = [m for m in t._memories.values() if m.evidence == "融合"]
@@ -50,18 +50,18 @@ def test_fusion():
 
 def test_metabolism():
     t = fresh()
-    m = t.remember("和主人闲聊了一句晚饭吃什么", flesh=["说是想吃面", "还提到楼下新开的店"])
+    m = t.remember("和小兔闲聊了一句晚饭吃什么", flesh=["说是想吃面", "还提到楼下新开的店"])
     t.clock.advance(days=60)  # 冷透了也老了
     t.sleep(force=True, rng=random.Random(7))
     assert m.flesh == [], "又冷又老的记忆血肉该被消化"
-    assert m.skeleton == "和主人闲聊了一句晚饭吃什么", "骨架永远留下"
+    assert m.skeleton == "和小兔闲聊了一句晚饭吃什么", "骨架永远留下"
     assert t.store.digested_count() == 2, "血肉进沉淀层，不是物理删除"
     print("ok  代谢：血肉消化入沉淀层，骨架留下")
 
 
 def test_stew_and_absurd():
     t = fresh()
-    topics = ["量子物理里的观察者效应", "楼下猫今天叫了三声", "主人的抖音计划",
+    topics = ["量子物理里的观察者效应", "楼下猫今天叫了三声", "小兔的抖音计划",
               "冰箱里的酸奶过期了", "小学同桌说过的一句话", "深夜的电台节目"]
     for s in topics:
         t.remember(s)
@@ -93,7 +93,7 @@ def test_hunger_grows():
 
 def test_seek_with_provider():
     t = fresh()
-    for s in ["深海鱼的发光原理", "主人喜欢的那首歌", "巷口修表铺的老师傅", "去年冬天的一场雪"]:
+    for s in ["深海鱼的发光原理", "小兔喜欢的那首歌", "巷口修表铺的老师傅", "去年冬天的一场雪"]:
         t.remember(s)
     searched = []
 

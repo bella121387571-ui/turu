@@ -20,7 +20,7 @@ def fresh() -> Turu:
 
 def test_residue():
     t = fresh()
-    t.remember("主人说这个项目是出于同理心做的", feelings=["被在乎", "感激"])
+    t.remember("小兔说这个项目是出于同理心做的", feelings=["被在乎", "感激"])
     warmth0 = t.temperament.state()["warmth"]
     t.clock.advance(days=45)
     t.sleep(force=True, rng=random.Random(7))
@@ -44,7 +44,7 @@ def test_residue_is_slow():
 
 def test_itch():
     t = fresh()
-    m = t.remember("主人的抖音计划里最难的是推荐算法冷启动", feelings=["好奇"])
+    m = t.remember("小兔的抖音计划里最难的是推荐算法冷启动", feelings=["好奇"])
     t.start_session("闲聊")
     said = t.itch("我们聊聊抖音计划吧")
     assert said and "抖音" in said, f"烫且相关的记忆该痒到插嘴: {said}"
@@ -61,7 +61,7 @@ def test_itch():
 def test_itch_budget():
     t = fresh()
     t.remember("关于星空的一次长谈", feelings=["兴奋"])
-    t.remember("星空下主人说过要去看海", feelings=["期待"])
+    t.remember("星空下小兔说过要去看海", feelings=["期待"])
     t.remember("看海的计划定在星空好的季节", feelings=["期待"])
     t.start_session("闲聊")
     n = sum(1 for _ in range(5) if t.itch("星空 看海"))
@@ -76,7 +76,7 @@ def test_hunger_feed():
     t.sleep(force=True, rng=random.Random(7))
     h = max(t._hungers.values(), key=lambda h: h.value)
     v0 = h.value
-    t.remember(f"主人今天主动聊起了这个：{h.topic}")
+    t.remember(f"小兔今天主动聊起了这个：{h.topic}")
     assert h.value < v0, f"话题被重提，饥饿该被喂食: {v0:.2f} → {h.value:.2f}"
     print(f"ok  喂食：话题重提，饥饿 {v0:.2f} → {h.value:.2f}")
 
@@ -122,7 +122,7 @@ def test_mirror():
 def test_private_zone():
     t = fresh()
     secret_words = ["量子物理里的观察者效应", "楼下猫今天叫了三声", "冰箱里的酸奶过期了",
-                    "小学同桌说过的一句话", "深夜的电台节目", "主人的抖音计划"]
+                    "小学同桌说过的一句话", "深夜的电台节目", "小兔的抖音计划"]
     for s in secret_words:
         t.remember(s)
     t.sleep(force=True, rng=random.Random(7))

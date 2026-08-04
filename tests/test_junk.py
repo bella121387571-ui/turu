@@ -25,14 +25,14 @@ def test_system_phrases_never_become_points():
     t = fresh()
     # 模拟导入产生的朴素记忆（每条都带同样的模板）+ 融合产物
     for i in range(6):
-        t.remember(f"2026-07-0{i} 和主人聊过：关于抖音计划的第{i}次讨论")
+        t.remember(f"2026-07-0{i} 和小兔聊过：关于抖音计划的第{i}次讨论")
     for i in range(4):
-        t.remember(f"（消化后的印象）和主人聊过：抖音计划的事 第{i}版", evidence="融合")
+        t.remember(f"（消化后的印象）和小兔聊过：抖音计划的事 第{i}版", evidence="融合")
     t.clock.advance(days=1)
     t.sleep(force=True, rng=random.Random(7))
 
     points = [m.skeleton for m in t._memories.values() if m.kind == "概念"]
-    for junk in ("消化后的印象", "和主人聊过", "（"):
+    for junk in ("消化后的印象", "和小兔聊过", "（"):
         assert not any(junk in p for p in points), f"系统模板不该成点: {points}"
     assert any("抖音计划" in p for p in points), f"真正的概念该长出来: {points}"
     print(f"ok  概念干净：长出 {points}，没有模板垃圾")
@@ -56,8 +56,8 @@ def test_purge_old_junk_points():
 
 def test_fusion_not_woven():
     t = fresh()
-    t.remember("主人今天说起了记忆系统的事")
-    t.remember("主人今天又说起记忆系统的事")
+    t.remember("小兔今天说起了记忆系统的事")
+    t.remember("小兔今天又说起记忆系统的事")
     t.clock.advance(days=1)
     t.sleep(force=True, rng=random.Random(7))  # 会产生融合记忆
     t.clock.advance(days=1)
