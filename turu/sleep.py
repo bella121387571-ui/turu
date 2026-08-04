@@ -10,6 +10,7 @@ M1 离线实现的阶段：巩固融合、代谢消化、触须衰减剪枝、�
 
 import json
 import random
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
@@ -54,6 +55,29 @@ POINT_STOP = set(
     "什么怎么可以觉得知道现在时候一个没有还是自己因为所以如果然后"
     "今天昨天明天已经开始其实真的一下有点这个那个我们你们他们聊过"
 )
+# 系统自己写的话（融合/判决/免疫/导入模板），不许被当成"反复出现的概念"
+SYSTEM_PHRASES = ("消化后的印象", "升维", "免疫记录", "发现矛盾", "回头看",
+                  "和主人聊过", "查到的资料")
+
+
+EDGE_TRIM = set("的了在和跟对给把被就都很也还又再第次个些关于说聊提到过件事")
+
+
+def _trim(word: str) -> str:
+    """剥掉候选词首尾的虚字——滑窗不懂词边界，这里给它补一刀。"""
+    while len(word) > 2 and word[0] in EDGE_TRIM:
+        word = word[1:]
+    while len(word) > 2 and word[-1] in EDGE_TRIM:
+        word = word[:-1]
+    return word
+
+
+def _overlaps(a: str, b: str) -> bool:
+    """两个候选词是不是同一个词的碎片：包含，或共享超过一半的字。"""
+    if a in b or b in a:
+        return True
+    shared = len(set(a) & set(b))
+    return shared >= min(len(a), len(b)) / 2
 
 
 @dataclass
@@ -100,13 +124,15 @@ class SleepCycle:
         last_sleep = t.last_sleep()
         report = SleepReport(at=now)
 
+        # 织网先跑：它会清掉长歪的点，之后的阶段才拿到干净的快照
+        self._weave(now, report)
+
         mems = list(t._memories.values())
         hot = [m for m in mems if temp.layer(t._t_eff(m, now)) == "烫"]
         recent = [m for m in mems if m.created_at >= last_sleep]
         replay = {m.id: m for m in hot + recent}
         report.replayed = len(replay)
 
-        self._weave(now, report)
         self._consolidate(list(replay.values()), now, report)
         self._metabolize(mems, now, report)
         self._decay_tendrils(last_sleep, report)
@@ -139,20 +165,27 @@ class SleepCycle:
         有 LLM 时由它提炼概念名；离线时用词频：反复出现的词自己长成点。
         """
         t = self.t
+        self._purge_junk_points(report)
         woven = t.store.woven_ids()
+        # 只织真实经历：系统自己写的（融合/推得的判词、免疫记录）不当原料
         targets = sorted(
             (m for m in t._memories.values()
-             if m.kind == "事件" and m.id not in woven),
+             if m.kind == "事件" and m.id not in woven
+             and m.evidence in ("亲历", "搜得")),
             key=lambda m: m.created_at,
         )[:WEAVE_BATCH]
+        for m in t._memories.values():  # 系统产物直接标记为已织，别反复扫
+            if m.kind == "事件" and m.id not in woven and m.evidence not in ("亲历", "搜得"):
+                t.store.mark_woven(m.id)
         if not targets:
             return
 
-        events = [m for m in t._memories.values() if m.kind == "事件"]
+        events = [m for m in t._memories.values()
+                  if m.kind == "事件" and m.evidence in ("亲历", "搜得")]
         df: dict[str, int] = {}
         for m in events:
             grams = set()
-            text = m.skeleton
+            text = self._clean(m.skeleton)
             for length in range(2, 7):
                 for i in range(len(text) - length + 1):
                     grams.add(text[i : i + length])
@@ -163,7 +196,10 @@ class SleepCycle:
 
         prev = None
         for m in targets:
-            names = llm_names.get(m.id) or self._gram_concepts(m.skeleton, df, len(events))
+            names = llm_names.get(m.id) or self._gram_concepts(
+                self._clean(m.skeleton), df, len(events)
+            )
+            names = [n for n in names if not self._is_junk(n)]
             points = []
             for name in names[:3]:
                 p, created = t.get_or_create_point(name, m.created_at)
@@ -191,6 +227,30 @@ class SleepCycle:
             report.woven += 1
         if report.new_points:
             report.notes.append(f"织网：长出 {report.new_points} 个新记忆点")
+
+    @staticmethod
+    def _clean(text: str) -> str:
+        """剥掉系统前缀和导入模板，只留真正说过的内容。"""
+        text = re.sub(r"^（[^）]{0,12}）", "", text)
+        text = re.sub(r"^\d{4}-\d{2}-\d{2}\s*", "", text)
+        text = re.sub(r"^和主人聊过[：:]\s*", "", text)
+        return text
+
+    @staticmethod
+    def _is_junk(name: str) -> bool:
+        return any(p in name or name in p for p in SYSTEM_PHRASES) or "（" in name or "）" in name
+
+    def _purge_junk_points(self, report: SleepReport) -> None:
+        """清掉早先版本长歪的点（系统模板被误当成概念）。"""
+        t = self.t
+        for p in [m for m in t._memories.values() if m.kind == "概念" and self._is_junk(m.skeleton)]:
+            for key in [k for k in t._tendrils if p.id in (k[0], k[1])]:
+                del t._tendrils[key]
+                t.store.delete_tendril(*key)
+            del t._memories[p.id]
+            t.store.conn.execute("DELETE FROM memories WHERE id=?", (p.id,))
+            t.store.conn.commit()
+            report.notes.append(f"织网：清掉一个长歪的点『{p.skeleton}』")
 
     def _attach_slice_edges(self, p, events: list) -> None:
         """把若干事件挂到点上：一条『关于』触须 + 一层时间切片（去重、按时序排）。"""
@@ -235,7 +295,9 @@ class SleepCycle:
     @staticmethod
     def _gram_concepts(text: str, df: dict[str, int], n_events: int) -> list[str]:
         """离线概念提取：反复出现、不太泛、不是虚词的词，自己长成点。"""
-        cap = max(POINT_MIN_DF, int(n_events * POINT_MAX_DF_RATIO))
+        # 上限：出现得太泛的词不成点。语料少时放宽（那时"处处都在"是正常的），
+        # 语料多时才真正开始过滤（导入模板这类会被挡住）
+        cap = max(POINT_MIN_DF * 2, int(n_events * POINT_MAX_DF_RATIO))
         cands = []
         for length in range(2, 7):
             for i in range(len(text) - length + 1):
@@ -248,7 +310,10 @@ class SleepCycle:
         cands.sort(key=lambda x: (-x[0], -len(x[1])))
         chosen: list[str] = []
         for _, g in cands:
-            if any(g in c or c in g for c in chosen):
+            # 滑窗会切出一堆彼此重叠的碎片（"关于抖音计划"/"抖音计划的第"），
+            # 只留第一个：重叠过半就算同一个词
+            g = _trim(g)
+            if len(g) < 2 or any(_overlaps(g, c) for c in chosen):
                 continue
             chosen.append(g)
             if len(chosen) == 3:

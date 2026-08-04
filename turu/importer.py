@@ -181,14 +181,25 @@ def replay(convs: list[dict], db_path: str, final_force: bool = True) -> dict:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    redo = "--redo" in sys.argv
+    if not args:
         print(__doc__)
         return
     default_db = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "turu.db"
     )
-    db = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("TURU_DB", default_db)
-    run(sys.argv[1], db)
+    db = args[1] if len(args) > 1 else os.environ.get("TURU_DB", default_db)
+    if redo:
+        # 重导：清掉去重标记，让同一批日子被重新提炼一遍
+        # （老记忆不删——它们会作为"当时的浅印象"留着，新的更深的一层叠上去）
+        from turu.store import Store
+        s = Store(db)
+        n = s.conn.execute("DELETE FROM meta WHERE k LIKE 'imported:%'").rowcount
+        s.conn.commit()
+        s.close()
+        print(f"已清掉 {n} 段的导入标记，这一批日子会被重新提炼。\n")
+    run(args[0], db)
 
 
 if __name__ == "__main__":
