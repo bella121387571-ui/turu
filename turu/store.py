@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 class Store:
     def __init__(self, path: str):
         # timeout=30：每日自动导入可能和正在对话的它同时碰库，排队别报错
-        self.conn = sqlite3.connect(path, timeout=30)
+        # check_same_thread=False：远程外壳按请求分线程，工具调用已由全局锁串行
+        self.conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
         self.conn.executescript(SCHEMA)
         # 原地迁移：老库（织网层之前）补 kind 列，不动任何已有记忆
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(memories)")]

@@ -26,4 +26,7 @@ echo.
 echo ================ 织网检查 ====================
 %PY% tests\test_weave.py
 echo.
+echo ================ 远程检查 ====================
+%PY% tests\test_http.py
+echo.
 pause
