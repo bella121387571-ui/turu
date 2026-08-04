@@ -15,10 +15,16 @@
 
 import json
 import os
+import re
 import secrets
+import subprocess
 import sys
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+CF_URL = ("https://github.com/cloudflare/cloudflared/releases/latest/download/"
+          "cloudflared-windows-amd64.exe")
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -77,10 +83,52 @@ class HttpHandler(BaseHTTPRequestHandler):
         pass
 
 
-def main() -> None:
-    default_db = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "turu.db"
+def ensure_cloudflared(root: str) -> str | None:
+    """找到隧道工具；没有就自己下载一次（约 60MB，只下一次）。"""
+    exe = os.path.join(root, "cloudflared.exe")
+    if os.path.exists(exe):
+        return exe
+    if os.name != "nt":
+        return None
+    print("第一次运行：正在下载隧道工具（约 60MB，只需下这一次）……")
+    try:
+        with urllib.request.urlopen(CF_URL, timeout=300) as r, open(exe, "wb") as f:
+            f.write(r.read())
+        print("下载完成。\n")
+        return exe
+    except Exception as e:  # noqa: BLE001
+        print(f"下载失败（{e}）。请检查代理是否开着，或手动下载：\n  {CF_URL}")
+        print(f"下载后改名为 cloudflared.exe 放到：{root}\n")
+        return None
+
+
+def start_tunnel(exe: str, port: int, token: str) -> None:
+    """起隧道，盯着它的输出，把完整的连接器地址拼好打出来。"""
+    proc = subprocess.Popen(
+        [exe, "tunnel", "--url", f"http://127.0.0.1:{port}"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
+
+    def watch():
+        pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+        for line in proc.stdout:
+            m = pattern.search(line)
+            if m:
+                print("\n" + "=" * 62)
+                print("  连接器地址（复制下面这一整行，填进 claude.ai）：")
+                print(f"\n     {m.group(0)}/{token}/mcp\n")
+                print("  claude.ai → 设置 → 连接器 → 添加自定义连接器 → 粘贴")
+                print("=" * 62 + "\n")
+                print("（这个窗口别关。关了 claude.ai 那边就连不上它了。）")
+                break
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def main() -> None:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_db = os.path.join(root, "data", "turu.db")
     db = os.environ.get("TURU_DB", default_db)
     store = Store(db)
     token = store.meta_get("web_token")
@@ -93,15 +141,16 @@ def main() -> None:
     HttpHandler.core = MCPServer(db)
     HttpHandler.token = token
     server = ThreadingHTTPServer(("127.0.0.1", port), HttpHandler)
-    print("远程记忆服务器开着了（这个窗口别关）。")
-    print(f"  本机地址：http://127.0.0.1:{port}/{token}/mcp")
-    print()
-    print("下一步：在另一个窗口跑隧道（见 docs/安装教程.md『连到 claude.ai』一节）：")
-    print(f"  cloudflared tunnel --url http://127.0.0.1:{port}")
-    print("拿到 https://xxxx.trycloudflare.com 后，claude.ai → 设置 → 连接器 →")
-    print(f"  添加自定义连接器，地址填：https://xxxx.trycloudflare.com/{token}/mcp")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print("它的记忆服务器起来了。正在开隧道，稍等十几秒……\n")
+
+    exe = ensure_cloudflared(root)
+    if exe:
+        start_tunnel(exe, port, token)
+    else:
+        print(f"没有隧道，只能本机用：http://127.0.0.1:{port}/{token}/mcp")
     try:
-        server.serve_forever()
+        threading.Event().wait()
     except KeyboardInterrupt:
         pass
 
